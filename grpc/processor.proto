@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+option go_package = "github.com/pulchre/wingman;grpc";
+
+package wingman;
+
+service Processor {
+	rpc Initialize (stream Message) returns (stream Message) {}
+}
+
+enum Type {
+	HEARTBEAT = 0;
+	CONNECT = 1;
+	JOB = 2;
+	RESULT = 3;
+	SHUTDOWN = 4;
+}
+
+message Message {
+	Type type = 1;
+	bytes ProcessorID = 2;
+	Job job = 3;
+	JobStatus job_status = 4;
+	Error error = 5;
+}
+
+enum JobStatus {
+	Success = 0;
+	Fail = 1;
+}
+
+message Job {
+	bytes ID = 1;
+	string TypeName = 2;
+	bytes Payload = 4;
+}
+
+message Error {
+	string message = 1;
+}
