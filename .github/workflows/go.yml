@@ -1,0 +1,22 @@
+name: Go
+on: [push]
+jobs:
+  test:
+    runs-on: ubuntu-20.04
+    services:
+      redis:
+        image: redis
+        ports:
+          - 6379:6379
+    env:
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+    steps:
+    - uses: actions/checkout@v2
+    - uses: actions/setup-go@v2
+      with:
+        go-version: '^1.16'
+    - run: go build -o processor/native/testcmdbin github.com/pulchre/wingman/processor/native/testcmd
+    - run: go test -cover -v github.com/pulchre/wingman/...
+      env:
+        WINGMAN_NATIVE_BIN: ./testcmdbin
