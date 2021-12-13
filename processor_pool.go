@@ -1,7 +1,12 @@
 package wingman
 
+type NewProcessorPoolFunc func(interface{}) ProcessorPool
+
+var NewProcessorPool NewProcessorPoolFunc
+
 type ProcessorPool interface {
-	// Get locks and returns a processor from the pool.
+	// Get blocks until a processor is available then returns one from the
+	// pool.
 	Get() Processor
 
 	// Put releases the processor with the given back to the pool.
@@ -12,4 +17,13 @@ type ProcessorPool interface {
 
 	// Cancel unblocks a call to wait.
 	Cancel()
+
+	// Close shuts down all available processors, delete all dead ones, and
+	// blocks until all busy ones are Put back into the pool.
+	Close()
+
+	// ForceClose shuts down all available processors, delete all dead,
+	// ones, unblocks any previous call to Close, and does not block even
+	// if there are still busy processors.
+	ForceClose()
 }
