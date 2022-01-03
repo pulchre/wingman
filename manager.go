@@ -19,8 +19,6 @@ type Manager struct {
 	queues []string
 	wg     sync.WaitGroup
 
-	concurrency int
-
 	mu       sync.Mutex
 	running  bool
 	stopping bool
@@ -33,9 +31,7 @@ type Manager struct {
 
 	backend Backend
 
-	processorCond       *sync.Cond
-	busyProcessors      map[string]Processor
-	availableProcessors map[string]Processor
+	pool ProcessorPool
 }
 
 type ManagerOptions struct {
@@ -43,6 +39,7 @@ type ManagerOptions struct {
 	Queues      []string
 	Concurrency int
 	Signals     []os.Signal
+	PoolOptions interface{}
 }
 
 // NewManager returns a new manager with the given backend, watching the
@@ -52,22 +49,18 @@ type ManagerOptions struct {
 //
 // Concurrency is the number of goroutines that will process work in each
 // process. A value of zero or less will be treated as unlimited.
-func NewManager(options ManagerOptions) *Manager {
-	if options.Concurrency < 1 {
-		options.Concurrency = 1
+func NewManager(options ManagerOptions) (*Manager, error) {
+	pool, err := NewProcessorPool(options.PoolOptions)
+	if err != nil {
+		return nil, err
 	}
 
-	manager := &Manager{
-		backend:             options.Backend,
-		queues:              options.Queues,
-		signals:             options.Signals,
-		concurrency:         options.Concurrency,
-		processorCond:       sync.NewCond(&sync.Mutex{}),
-		availableProcessors: make(map[string]Processor),
-		busyProcessors:      make(map[string]Processor),
-	}
-
-	return manager
+	return &Manager{
+		backend: options.Backend,
+		queues:  options.Queues,
+		signals: options.Signals,
+		pool:    pool,
+	}, nil
 }
 
 // Start starts the manager which begins watching the specified queues for
@@ -106,10 +99,6 @@ func (s *Manager) Start() error {
 	}
 	s.mu.Unlock()
 
-	// Processor count manager
-	s.wg.Add(1)
-	go s.concurrencyManager(ctx)
-
 	// Queue watcher
 	s.wg.Add(len(s.queues))
 	for _, q := range s.queues {
@@ -138,134 +127,16 @@ func (s *Manager) Stop() {
 
 	s.stopping = true
 	s.cancel()
+	s.pool.Cancel()
 
 	s.mu.Unlock()
 
-	s.shutdownProcessors()
+	s.pool.Close()
 
 	s.wg.Wait()
 
 	s.shutdownSignalHandler()
 	s.signalWg.Wait()
-}
-
-func (s *Manager) concurrencyManager(ctx context.Context) {
-	defer s.wg.Done()
-
-	for {
-		s.processorCond.L.Lock()
-		processorCount := len(s.availableProcessors) + len(s.busyProcessors)
-		if processorCount == s.concurrency {
-			s.processorCond.Wait()
-		}
-
-		for i := processorCount; i < s.concurrency; i++ {
-			s.startNewProcessor()
-		}
-		s.processorCond.L.Unlock()
-
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-	}
-}
-
-// This method assumes that the caller has a lock on processorCond.L
-func (s *Manager) startNewProcessor() {
-	p := NewProcessor()
-	err := p.Start()
-	if err != nil {
-		Log.Print("Error starting processor error=%v", err)
-		return
-	}
-
-	s.busyProcessors[p.Id()] = p
-
-	s.wg.Add(1)
-	go s.processorStatusWatch(p)
-}
-
-func (s *Manager) processorStatusWatch(p Processor) {
-	defer s.wg.Done()
-
-	for status := range p.StatusChange() {
-		s.handleProcessorStatusChange(p, status)
-	}
-}
-
-func (s *Manager) handleProcessorStatusChange(p Processor, status ProcessorStatus) {
-	s.processorCond.L.Lock()
-	defer s.processorCond.L.Unlock()
-
-	Log.Printf("Processor id=%v status=%v", p.Id(), ProcessorStatuses[status])
-
-	switch status {
-	case ProcessorStatusStarting, ProcessorStatusWorking, ProcessorStatusStopping:
-		delete(s.availableProcessors, p.Id())
-		s.busyProcessors[p.Id()] = p
-	case ProcessorStatusIdle:
-		delete(s.busyProcessors, p.Id())
-
-		err := s.backend.ClearProcessor(p.Id())
-		if err != nil {
-			Log.Print(`Failed to clear working processor=%v err="%v"`, p.Id(), err)
-		}
-
-		s.availableProcessors[p.Id()] = p
-		s.processorCond.Broadcast()
-	case ProcessorStatusDead:
-		delete(s.availableProcessors, p.Id())
-		delete(s.busyProcessors, p.Id())
-		s.processorCond.Broadcast()
-	}
-}
-
-func (s *Manager) shutdownProcessors() {
-	s.processorCond.L.Lock()
-	defer s.processorCond.L.Unlock()
-
-	for _, p := range s.availableProcessors {
-		go func(p Processor) {
-			err := p.Stop()
-
-			if err != nil {
-				Log.Printf("Error shutting down processor (%s): %v", p.Id(), err)
-			}
-		}(p)
-	}
-
-	for _, p := range s.busyProcessors {
-		go func(p Processor) {
-			err := p.Stop()
-
-			if err != nil {
-				Log.Printf("Error shutting down processor (%s): %v", p.Id(), err)
-			}
-		}(p)
-	}
-}
-
-func (s *Manager) killProcessors() {
-	s.processorCond.L.Lock()
-	defer s.processorCond.L.Unlock()
-
-	for _, p := range s.availableProcessors {
-		err := p.Kill()
-
-		if err != nil {
-			Log.Printf("Error kill processor (%s): %v", p.Id(), err)
-		}
-	}
-
-	for _, p := range s.busyProcessors {
-		err := p.Kill()
-
-		if err != nil {
-			Log.Printf("Error kill processor (%s): %v", p.Id(), err)
-		}
-	}
 }
 
 func (s *Manager) shutdownSignalHandler() {
@@ -281,25 +152,6 @@ func (s *Manager) watchQueue(ctx context.Context, queue string) {
 
 	Log.Printf("Watching queue=%v", queue)
 	for {
-		s.processorCond.L.Lock()
-		s.mu.Lock()
-		if s.stopping {
-			s.mu.Unlock()
-			s.processorCond.L.Unlock()
-			return
-		}
-		s.mu.Unlock()
-
-		if len(s.availableProcessors) == 0 {
-			s.processorCond.Wait()
-			s.processorCond.L.Unlock()
-			continue
-		}
-		s.processorCond.L.Unlock()
-
-		// Check if we're shutting down before creating the retrieveJob
-		// channel/goroutine. Since select chooses a random channel,
-		// we want to ensure we don't start working on a new job.
 		select {
 		case <-ctx.Done():
 			return
@@ -308,9 +160,18 @@ func (s *Manager) watchQueue(ctx context.Context, queue string) {
 
 		select {
 		case job, ok := <-s.retrieveJob(ctx, queue):
-			if ok {
-				s.handleJob(ctx, job)
+			if !ok {
+				continue
 			}
+
+			p := s.pool.Get()
+
+			if p == nil {
+				s.backend.ReenqueueStagedJob(job.StagingID.String())
+				continue
+			}
+
+			s.handleJob(ctx, p, job)
 		case <-ctx.Done():
 			return
 		}
@@ -340,7 +201,7 @@ func (s *Manager) retrieveJob(ctx context.Context, queue string) <-chan Internal
 	return jobChan
 }
 
-func (s *Manager) handleJob(ctx context.Context, job InternalJob) {
+func (s *Manager) handleJob(ctx context.Context, p Processor, job InternalJob) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -348,20 +209,19 @@ func (s *Manager) handleJob(ctx context.Context, job InternalJob) {
 		return
 	}
 
-	p := s.popIdleProcessor()
-
 	err := s.backend.ProcessJob(job.StagingID.String(), p.Id())
 	if err != nil {
 		Log.Printf("Failed to move job id=%v to processing on the backend err=%v", job.ID, err)
-		s.pushIdleProcessor(p)
+		s.pool.Put(p.Id())
 		return
 	}
 
 	Log.Printf("Handling job id=%v", job.ID)
 	err = p.SendJob(job)
 	if err != nil {
-		s.pushIdleProcessor(p)
+		s.pool.Put(p.Id())
 		Log.Printf("Failed to send job to processor: %v", err)
+		return
 	}
 
 	s.wg.Add(1)
@@ -377,6 +237,8 @@ func (s *Manager) waitForResults(p Processor) {
 		}
 	}
 
+	<-p.Done()
+	s.pool.Put(p.Id())
 }
 
 func (s *Manager) waitForSignal() {
@@ -394,7 +256,7 @@ func (s *Manager) waitForSignal() {
 					Log.Print(signalReceivedMsg)
 					go s.Stop()
 				} else if i > 1 {
-					s.killProcessors()
+					s.pool.ForceClose()
 					done = true
 				}
 			} else {
@@ -425,26 +287,4 @@ func (s *Manager) reenqueueStagedJobs() error {
 	}
 
 	return nil
-}
-
-func (s *Manager) popIdleProcessor() Processor {
-	s.processorCond.L.Lock()
-	defer s.processorCond.L.Unlock()
-
-	for id, p := range s.availableProcessors {
-		delete(s.availableProcessors, id)
-		s.busyProcessors[p.Id()] = p
-		return p
-	}
-
-	return nil
-}
-
-func (s *Manager) pushIdleProcessor(p Processor) {
-	s.processorCond.L.Lock()
-	defer s.processorCond.L.Unlock()
-	defer s.processorCond.Signal()
-
-	delete(s.busyProcessors, p.Id())
-	s.availableProcessors[p.Id()] = p
 }

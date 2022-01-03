@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"os/signal"
+	"runtime"
+	"runtime/pprof"
 	"sync"
 	"syscall"
 	"testing"
@@ -12,7 +14,7 @@ import (
 
 	"github.com/pulchre/wingman"
 	"github.com/pulchre/wingman/mock"
-	_ "github.com/pulchre/wingman/processor/goroutine"
+	"github.com/pulchre/wingman/processor/goroutine"
 )
 
 const concurrencyCount = 2
@@ -23,22 +25,8 @@ func init() {
 	// we compare the number of goroutines in tests we won't be off by one.
 	c := make(chan os.Signal)
 	signal.Notify(c)
-	signal.Reset()
+	signal.Stop(c)
 	close(c)
-}
-
-func TestNewManagerConcurrencyLessThanZero(t *testing.T) {
-	s := wingman.NewManager(
-		wingman.ManagerOptions{
-			Backend:     mock.NewBackend(),
-			Queues:      []string{"*"},
-			Concurrency: -1,
-		},
-	)
-
-	if wingman.ManagerConcurrency(s) != 1 {
-		t.Error("Concurrency should be 1, got: ", wingman.ManagerConcurrency(s))
-	}
 }
 
 func TestStartAlreadyRunning(t *testing.T) {
@@ -54,21 +42,47 @@ func TestStartAlreadyRunning(t *testing.T) {
 }
 
 func TestStartJobProcessSuccessfully(t *testing.T) {
-	wingman.TestLog.Reset()
+	mock.TestLog.Reset()
+
+	// This seems to help prevent circumstances where there
+	// are more goroutines at the start than the end.
+	time.Sleep(10 * time.Millisecond)
+
+	goroutines := runtime.NumGoroutine()
+	defer func() {
+		if err := recover(); err != nil {
+			panic(err)
+		}
+
+		// This seems to help prevent circumstances
+		// where there are more goroutines at the end
+		// than the start.
+		time.Sleep(10 * time.Millisecond)
+		now := runtime.NumGoroutine()
+
+		if goroutines != now {
+			pprof.Lookup("goroutine").WriteTo(os.Stdout, 1)
+			t.Fatalf("Started with %d goroutines. Ended with: %d", goroutines, now)
+		}
+	}()
 
 	handlerName := "handler"
 	mockJob := mock.NewJob()
 	mockJob.HandlerOverride = handlerName
 
 	var jobWg sync.WaitGroup
+	var processed bool
 
 	mock.RegisterHandler(handlerName, func(ctx context.Context, job wingman.Job) error {
+		defer jobWg.Done()
+
 		j := job.(mock.Job)
 
 		if j != mockJob {
 			t.Errorf("Wrong job passed to handler. Got: %v, Expected: %v", j, mockJob)
 		}
-		jobWg.Done()
+
+		processed = true
 
 		return nil
 	})
@@ -77,20 +91,25 @@ func TestStartJobProcessSuccessfully(t *testing.T) {
 	wg := run(t, s, nil)
 	jobWg.Add(1)
 	wingman.ManagerBackend(s).PushJob(mockJob)
+
 	jobWg.Wait()
+	time.Sleep(100 * time.Millisecond)
+
+	if !processed {
+		t.Errorf("Expected job to process")
+	}
 
 	mock.CleanupHandlers()
-
 	s.Stop()
 	wg.Wait()
 
-	if !wingman.TestLog.PrintReceived("Job %s started...", backendToMockBackend(s).LastAddedId) {
-		t.Errorf("Expected log when job processing starts. Got: %v", wingman.TestLog.PrintVars)
+	if mock.TestLog.PrintReceived("Job %v failed with error: %v") {
+		t.Errorf("Expected successful job to not log error. Got: %v", mock.TestLog.PrintVars)
 	}
 }
 
 func TestStartJobProcessError(t *testing.T) {
-	wingman.TestLog.Reset()
+	mock.TestLog.Reset()
 
 	handlerName := "handler"
 	mockJob := mock.NewJob()
@@ -101,12 +120,13 @@ func TestStartJobProcessError(t *testing.T) {
 	jobErr := errors.New("Failed to process job")
 
 	mock.RegisterHandler(handlerName, func(ctx context.Context, job wingman.Job) error {
+		defer jobWg.Done()
+
 		j := job.(mock.Job)
 
 		if j != mockJob {
 			t.Errorf("Wrong job passed to handler. Got: %v, Expected: %v", j, mockJob)
 		}
-		jobWg.Done()
 
 		return jobErr
 	})
@@ -116,19 +136,20 @@ func TestStartJobProcessError(t *testing.T) {
 	jobWg.Add(1)
 	wingman.ManagerBackend(s).PushJob(mockJob)
 	jobWg.Wait()
+	time.Sleep(100 * time.Millisecond)
 
 	mock.CleanupHandlers()
 
 	s.Stop()
 	wg.Wait()
 
-	if !wingman.TestLog.PrintReceived("Job %v failed with error: %v", backendToMockBackend(s).LastAddedId, jobErr) {
-		t.Errorf("Expected log when job processing fails. Got: %v", wingman.TestLog.PrintVars)
+	if !mock.TestLog.PrintReceived("Job %v failed with error: %v", backendToMockBackend(s).LastAddedId, jobErr) {
+		t.Errorf("Expected log when job processing fails. Got: %v", mock.TestLog.PrintVars)
 	}
 }
 
 func TestStartJobProcessPanic(t *testing.T) {
-	wingman.TestLog.Reset()
+	mock.TestLog.Reset()
 
 	handlerName := "handler"
 	mockJob := mock.NewJob()
@@ -155,18 +176,21 @@ func TestStartJobProcessPanic(t *testing.T) {
 	wingman.ManagerBackend(s).PushJob(mockJob)
 	jobWg.Wait()
 
+	// Make sure we don't miss the panic
+	time.Sleep(250 * time.Millisecond)
+
 	mock.CleanupHandlers()
 
 	s.Stop()
 	wg.Wait()
 
-	if !wingman.TestLog.PrintReceived("Job %v failed with error: %v", backendToMockBackend(s).LastAddedId, wingman.NewError(panicMsg)) {
-		t.Errorf("Expected log when job panics. Got: %v", wingman.TestLog.PrintVars)
+	if !mock.TestLog.PrintReceived("Job %v failed with error: %v", backendToMockBackend(s).LastAddedId, wingman.NewError(panicMsg)) {
+		t.Errorf("Expected log when job panics. Got: %v", mock.TestLog.PrintVars)
 	}
 }
 
 func TestStartNextJobFails(t *testing.T) {
-	wingman.TestLog.Reset()
+	mock.TestLog.Reset()
 
 	s := setup()
 	err := errors.New("Test error")
@@ -176,8 +200,8 @@ func TestStartNextJobFails(t *testing.T) {
 
 	s.Stop()
 
-	if !wingman.TestLog.PrintReceived("Failed to retrieve next job: ", err) {
-		t.Errorf("Erroneously logged: `%v`", wingman.TestLog.PrintVars)
+	if !mock.TestLog.PrintReceived("Failed to retrieve next job: ", err) {
+		t.Errorf("Erroneously logged: `%v`", mock.TestLog.PrintVars)
 	}
 }
 
@@ -200,7 +224,7 @@ func TestStopAlreadyStopped(t *testing.T) {
 }
 
 func TestStopByOneSignal(t *testing.T) {
-	wingman.TestLog.Reset()
+	mock.TestLog.Reset()
 
 	s := setup()
 	wg := run(t, s, nil)
@@ -218,13 +242,13 @@ func TestStopByOneSignal(t *testing.T) {
 
 	wg.Wait()
 
-	if !wingman.TestLog.PrintReceived(wingman.SignalReceivedMsg()) {
-		t.Errorf("Expected signal received message: %s", wingman.TestLog.PrintVars)
+	if !mock.TestLog.PrintReceived(wingman.SignalReceivedMsg()) {
+		t.Errorf("Expected signal received message: %s", mock.TestLog.PrintVars)
 	}
 }
 
 func TestStopByManySignals(t *testing.T) {
-	wingman.TestLog.Reset()
+	mock.TestLog.Reset()
 
 	s := setup()
 	wg := run(t, s, nil)
@@ -241,18 +265,19 @@ func TestStopByManySignals(t *testing.T) {
 	mockJob.HandlerOverride = handlerName
 
 	mock.RegisterHandler(handlerName, func(ctx context.Context, job wingman.Job) error {
-		time.Sleep(1500 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 		return nil
 	})
 
 	wingman.ManagerBackend(s).PushJob(mockJob)
 
+	time.Sleep(10 * time.Millisecond)
 	err = process.Signal(syscall.SIGUSR2)
 	if err != nil {
 		t.Fatal("Could not send first signal to test process: ", err)
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
 	err = process.Signal(syscall.SIGUSR2)
 	if err != nil {
 		t.Fatal("Could not send second signal to test process: ", err)
@@ -260,30 +285,12 @@ func TestStopByManySignals(t *testing.T) {
 
 	wg.Wait()
 
-	if !wingman.TestLog.FatalReceived(wingman.SignalHardShutdownMsg()) {
-		t.Errorf("Expected signal received message: %s", wingman.TestLog.PrintVars)
+	time.Sleep(10 * time.Millisecond)
+	if !mock.TestLog.FatalReceived(wingman.SignalHardShutdownMsg()) {
+		t.Errorf("Expected signal received message: %s", mock.TestLog.PrintVars)
 	}
 
 	mock.CleanupHandlers()
-}
-
-func TestMaintainCorrectProcessorCount(t *testing.T) {
-	s := setup()
-	run(t, s, nil)
-
-	count := wingman.ProcessorCount(s)
-	if count != concurrencyCount {
-		t.Fatalf("Correct number of processors not started. Got: %d, expect: %v", count, concurrencyCount)
-	}
-
-	p := wingman.PopIdleProcessor(s)
-	p.Stop()
-
-	time.Sleep(100 * time.Millisecond)
-	count = wingman.ProcessorCount(s)
-	if count != concurrencyCount {
-		t.Fatalf("Correct number of processors not maintained. Got: %d, expect: %v", count, concurrencyCount)
-	}
 }
 
 func run(t *testing.T, s *wingman.Manager, expectedErr error) *sync.WaitGroup {
@@ -307,14 +314,21 @@ func run(t *testing.T, s *wingman.Manager, expectedErr error) *sync.WaitGroup {
 
 func setup() *wingman.Manager {
 	backend := mock.NewBackend()
-	return wingman.NewManager(
+	mgr, err := wingman.NewManager(
 		wingman.ManagerOptions{
-			Backend:     backend,
-			Queues:      []string{"*"},
-			Concurrency: concurrencyCount,
-			Signals:     []os.Signal{syscall.SIGUSR2},
+			Backend: backend,
+			Queues:  []string{"*"},
+			Signals: []os.Signal{syscall.SIGUSR2},
+			PoolOptions: goroutine.PoolOptions{
+				Concurrency: 1,
+			},
 		},
 	)
+	if err != nil {
+		panic(err)
+	}
+
+	return mgr
 }
 
 func backendToMockBackend(s *wingman.Manager) *mock.Backend {
