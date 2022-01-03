@@ -18,16 +18,10 @@ var ProcessorStatuses = map[ProcessorStatus]string{
 
 type ProcessorStatus int
 
-type NewProcessorFunc func() Processor
-
-var NewProcessor NewProcessorFunc
-
 type Processor interface {
 	Id() string
-	Start() error
 	SendJob(InternalJob) error
 	Results() <-chan ResultMessage
-	Stop() error
 	Kill() error
-	StatusChange() <-chan ProcessorStatus
+	Done() <-chan struct{}
 }
