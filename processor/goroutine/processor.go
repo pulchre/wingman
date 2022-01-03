@@ -20,20 +20,21 @@ type Processor struct {
 	statusMu   sync.Mutex
 	statusChan chan wingman.ProcessorStatus
 	stopping   bool
+	doneChan   chan struct{}
 
 	resultChan chan wingman.ResultMessage
 }
 
-func newProcessor() wingman.Processor {
-	return &Processor{
+func NewProcessor() *Processor {
+	p := &Processor{
 		id:         uuid.New(),
 		resultChan: make(chan wingman.ResultMessage, 64),
 		statusChan: make(chan wingman.ProcessorStatus, 64),
 	}
-}
+	p.setStatus(wingman.ProcessorStatusStarting)
+	p.setStatus(wingman.ProcessorStatusIdle)
 
-func init() {
-	wingman.NewProcessor = newProcessor
+	return p
 }
 
 func (p *Processor) Id() string {
@@ -57,7 +58,6 @@ func (p *Processor) Stop() error {
 
 	go func() {
 		p.wg.Wait()
-		close(p.resultChan)
 		p.setStatus(wingman.ProcessorStatusDead)
 
 	}()
@@ -81,6 +81,8 @@ func (p *Processor) SendJob(job wingman.InternalJob) error {
 	defer p.mu.Unlock()
 
 	var ctx context.Context
+	p.resultChan = make(chan wingman.ResultMessage, 64)
+	p.doneChan = make(chan struct{})
 
 	p.wg.Add(1)
 	p.working = true
@@ -96,6 +98,7 @@ func (p *Processor) SendJob(job wingman.InternalJob) error {
 			if !p.stopping {
 				p.setStatus(wingman.ProcessorStatusIdle)
 			}
+			close(p.doneChan)
 		}()
 		var err error
 
@@ -117,6 +120,7 @@ func (p *Processor) SendJob(job wingman.InternalJob) error {
 				Job:   job,
 				Error: err,
 			}
+			close(p.resultChan)
 		}()
 
 		wingman.Log.Printf("Job %s started...", job.ID)
@@ -128,15 +132,12 @@ func (p *Processor) SendJob(job wingman.InternalJob) error {
 
 func (p *Processor) Results() <-chan wingman.ResultMessage        { return p.resultChan }
 func (p *Processor) StatusChange() <-chan wingman.ProcessorStatus { return p.statusChan }
+func (p *Processor) Done() <-chan struct{}                        { return p.doneChan }
 
 func (p *Processor) setStatus(s wingman.ProcessorStatus) {
 	p.statusMu.Lock()
 	defer p.statusMu.Unlock()
 
 	p.status = s
-	p.statusChan <- p.status
-
-	if s == wingman.ProcessorStatusDead {
-		close(p.statusChan)
-	}
+	wingman.Log.Printf("Processor id=%v status=%v", p.Id(), wingman.ProcessorStatuses[s])
 }
