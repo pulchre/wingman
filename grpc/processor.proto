@@ -18,10 +18,11 @@ enum Type {
 
 message Message {
 	Type type = 1;
-	bytes ProcessorID = 2;
-	Job job = 3;
-	JobStatus job_status = 4;
-	Error error = 5;
+	int64 ProcessID = 2;
+	bytes ProcessorID = 3;
+	Job job = 4;
+	JobStatus job_status = 5;
+	Error error = 6;
 }
 
 enum JobStatus {
