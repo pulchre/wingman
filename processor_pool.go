@@ -1,6 +1,6 @@
 package wingman
 
-type NewProcessorPoolFunc func(interface{}) ProcessorPool
+type NewProcessorPoolFunc func(interface{}) (ProcessorPool, error)
 
 var NewProcessorPool NewProcessorPoolFunc
 
