@@ -26,4 +26,7 @@ type ProcessorPool interface {
 	// ones, unblocks any previous call to Close, and does not block even
 	// if there are still busy processors.
 	ForceClose()
+
+	// Done returns a chan which is closed when pool is done closing.
+	Done() <-chan struct{}
 }
