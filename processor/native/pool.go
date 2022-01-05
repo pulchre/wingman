@@ -32,6 +32,10 @@ type Pool struct {
 	shutdown     bool
 	wg           sync.WaitGroup
 
+	doneMu     sync.Mutex
+	doneChan   chan struct{}
+	doneClosed bool
+
 	err   error
 	errMu sync.Mutex
 }
@@ -96,6 +100,7 @@ func newPool(opts PoolOptions) *Pool {
 		dead:         make([]*handle, 0),
 		processes:    make(map[int]*process),
 		shutdownCond: sync.NewCond(new(sync.Mutex)),
+		doneChan:     make(chan struct{}),
 	}
 }
 
@@ -202,6 +207,9 @@ func (p *Pool) Cancel() {
 func (p *Pool) Close() {
 	p.closeProcessors(true)
 	p.wg.Wait()
+	p.server.Stop()
+	p.sendDone()
+
 }
 
 func (p *Pool) ForceClose() {
@@ -218,7 +226,10 @@ func (p *Pool) ForceClose() {
 	}
 
 	p.server.Stop()
+	p.sendDone()
 }
+
+func (p *Pool) Done() <-chan struct{} { return p.doneChan }
 
 func (p *Pool) Initialize(stream pb.Processor_InitializeServer) error {
 	p.wg.Add(1)
@@ -271,6 +282,18 @@ func (p *Pool) watchHandleUpdates(process *process) {
 		}
 		p.cond.L.Unlock()
 	}
+}
+
+func (p *Pool) sendDone() {
+	p.doneMu.Lock()
+	defer p.doneMu.Unlock()
+
+	if p.doneClosed {
+		return
+	}
+
+	close(p.doneChan)
+	p.doneClosed = true
 }
 
 // TODO: review handling of handles and processes
