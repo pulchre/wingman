@@ -312,8 +312,13 @@ func (p *Pool) closeProcessors(block bool) {
 	p.dead = make([]*handle, 0)
 	p.cond.L.Unlock()
 
-	for _, p := range p.processes {
-		p.Stop()
+	for _, proc := range p.processes {
+		p.wg.Add(1)
+		go func(proc *process) {
+			defer p.wg.Done()
+
+			proc.Stop()
+		}(proc)
 	}
 
 	if block && len(p.busy) > 0 {
