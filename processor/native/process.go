@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -202,7 +201,6 @@ func (p *process) Stop() error {
 	// the process will die and we will be waiting for it to finish
 	// working.
 	p.wg.Wait()
-	log.Print("asdfsdfsdafa")
 
 	return nil
 }
