@@ -135,6 +135,8 @@ func (s *Manager) Stop() {
 
 	s.wg.Wait()
 
+	<-s.pool.Done()
+
 	s.shutdownSignalHandler()
 	s.signalWg.Wait()
 }
