@@ -14,6 +14,9 @@ type Pool struct {
 	busy      []*Processor
 	dead      []*Processor
 
+	doneChan   chan struct{}
+	doneClosed bool
+
 	shutdownCond *sync.Cond
 	shutdown     bool
 }
@@ -38,6 +41,7 @@ func NewPool(options interface{}) (wingman.ProcessorPool, error) {
 		available:    make([]*Processor, opts.Concurrency),
 		busy:         make([]*Processor, 0),
 		dead:         make([]*Processor, 0),
+		doneChan:     make(chan struct{}),
 		shutdownCond: sync.NewCond(new(sync.Mutex)),
 	}
 
@@ -112,6 +116,8 @@ func (p *Pool) ForceClose() {
 	p.closeProcessors(false)
 }
 
+func (p *Pool) Done() <-chan struct{} { return p.doneChan }
+
 func (p *Pool) closeProcessors(block bool) {
 	p.shutdownCond.L.Lock()
 	p.shutdown = true
@@ -128,6 +134,20 @@ func (p *Pool) closeProcessors(block bool) {
 	if block && len(p.busy) > 0 {
 		p.shutdownCond.Wait()
 	}
+
+	p.closeDone()
+}
+
+func (p *Pool) closeDone() {
+	p.cond.L.Lock()
+	defer p.cond.L.Unlock()
+
+	if p.doneClosed {
+		return
+	}
+
+	close(p.doneChan)
+	p.doneClosed = true
 }
 
 func index(id string, a []*Processor) (int, bool) {
