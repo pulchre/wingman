@@ -1,0 +1,37 @@
+digraph {
+	"manager.Start()" -> {
+		"go waitForSignal()"
+		"go watchQueue()"
+		"Pools" [shape=none]
+	}
+	"Goroutine Pool" [shape=none]
+	"Pools" -> "Goroutine Pool"
+
+	"Native Pool" [shape=none]
+	"Pools" -> "Native Pool"
+
+	"Native Pool" -> "go watchHandleUpdates()"
+	"Native Pool" -> "go GRPCServer.Serve()"
+
+	"Native Pool" -> "Subprocesses"
+	"Subprocesses" -> "go GRPCServer.Serve()" [tailport=s headport=s]
+
+	"handleJob()" [shape=diamond]
+
+	"go watchQueue()" -> "handleJob()"
+	"handleJob()" -> "go waitForResults()"
+
+	"Processors" [shape=none]
+	"handleJob()" -> "Processors"
+
+	"Goroutine" [shape=none]
+	"Processors" -> "Goroutine"
+
+	"Native" [shape=none]
+	"Processors" -> "Native"
+
+	"Goroutine" -> "go func()"
+
+	"Send job to Subprocess" [shape=diamond]
+	"Native" -> "Send job to Subprocess"
+}
