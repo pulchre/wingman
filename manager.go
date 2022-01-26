@@ -37,7 +37,6 @@ type Manager struct {
 type ManagerOptions struct {
 	Backend     Backend
 	Queues      []string
-	Concurrency int
 	Signals     []os.Signal
 	PoolOptions interface{}
 }
@@ -46,9 +45,6 @@ type ManagerOptions struct {
 // given queues. It is recommended that a manager be used only in a
 // standalone program as it starts subprocesses of itself to handle
 // parallelism.
-//
-// Concurrency is the number of goroutines that will process work in each
-// process. A value of zero or less will be treated as unlimited.
 func NewManager(options ManagerOptions) (*Manager, error) {
 	pool, err := NewProcessorPool(options.PoolOptions)
 	if err != nil {
