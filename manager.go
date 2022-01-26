@@ -75,6 +75,8 @@ func (s *Manager) Start() error {
 	s.running = true
 	ctx, s.cancel = context.WithCancel(context.Background())
 
+	// This will throw any jobs that were popped off their queue but for
+	// which processing had not began.
 	err := s.reenqueueStagedJobs()
 	if err != nil {
 		s.cancel()
