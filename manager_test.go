@@ -3,10 +3,12 @@ package wingman_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/signal"
 	"runtime"
 	"runtime/pprof"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -103,8 +105,10 @@ func TestStartJobProcessSuccessfully(t *testing.T) {
 	s.Stop()
 	wg.Wait()
 
-	if mock.TestLog.PrintReceived("Job %v failed with error: %v") {
-		t.Errorf("Expected successful job to not log error. Got: %v", mock.TestLog.PrintVars)
+	for _, v := range mock.TestLog.PrintVars {
+		if strings.Contains(v, "failed with error:") {
+			t.Errorf("Expected successful job to not log error")
+		}
 	}
 }
 
@@ -143,7 +147,7 @@ func TestStartJobProcessError(t *testing.T) {
 	s.Stop()
 	wg.Wait()
 
-	if !mock.TestLog.PrintReceived("Job %v failed with error: %v", backendToMockBackend(s).LastAddedId, jobErr) {
+	if !mock.TestLog.PrintReceived(fmt.Sprintf("Job %v failed with error: %v", backendToMockBackend(s).LastAddedId, jobErr)) {
 		t.Errorf("Expected log when job processing fails. Got: %v", mock.TestLog.PrintVars)
 	}
 }
@@ -184,7 +188,7 @@ func TestStartJobProcessPanic(t *testing.T) {
 	s.Stop()
 	wg.Wait()
 
-	if !mock.TestLog.PrintReceived("Job %v failed with error: %v", backendToMockBackend(s).LastAddedId, wingman.NewError(panicMsg)) {
+	if !mock.TestLog.PrintReceived(fmt.Sprintf("Job %v failed with error: %v", backendToMockBackend(s).LastAddedId, wingman.NewError(panicMsg))) {
 		t.Errorf("Expected log when job panics. Got: %v", mock.TestLog.PrintVars)
 	}
 }
@@ -200,7 +204,7 @@ func TestStartNextJobFails(t *testing.T) {
 
 	s.Stop()
 
-	if !mock.TestLog.PrintReceived("Failed to retrieve next job: ", err) {
+	if !mock.TestLog.PrintReceived(fmt.Sprint("Failed to retrieve next job: ", err)) {
 		t.Errorf("Erroneously logged: `%v`", mock.TestLog.PrintVars)
 	}
 }

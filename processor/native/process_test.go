@@ -40,7 +40,7 @@ func TestProcessStart(t *testing.T) {
 			continue
 		}
 
-		if !mock.TestLog.PrintReceived("Starting subprocess pid=%d", p.cmd.Process.Pid) {
+		if !mock.TestLog.PrintReceived(fmt.Sprintf("Starting subprocess pid=%d", p.cmd.Process.Pid)) {
 			t.Error("expected correct process id to be logged. Got: ", mock.TestLog.PrintVars)
 		}
 
