@@ -131,6 +131,10 @@ func (s *Manager) Stop() {
 
 	s.pool.Close()
 
+	// TODO: I don't think this is needed. We are waiting up in the Start
+	// method. In cases when Stop is called from the signal handler, for
+	// example, we may never execute code below this line since the program
+	// will exit when Start is returned.
 	s.wg.Wait()
 
 	<-s.pool.Done()
