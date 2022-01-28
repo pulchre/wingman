@@ -37,3 +37,35 @@ func TestStop(t *testing.T) {
 		t.Errorf("Expected to receive `dead` status for processor")
 	}
 }
+
+func TestSendJob(t *testing.T) {
+	mock.TestLog.Reset()
+	p := NewProcessor()
+
+	p.Start()
+
+	job := mock.NewWrappedJob()
+	err := p.SendJob(job)
+	if err != nil {
+		t.Fatalf("goroutine SendJob should never return a non-nil error: %v", err)
+	}
+
+	if !mock.TestLog.PrintReceived(fmt.Sprintf("Processor id=%v status=working", p.Id())) {
+		t.Errorf("Expected to receive `working` status for processor")
+	}
+
+	res := <-p.Results()
+	time.Sleep(10 * time.Millisecond)
+
+	if !mock.TestLog.PrintReceived(fmt.Sprintf("Job %s started...", job.ID)) {
+		t.Errorf("Expected to receive `working` status for processor")
+	}
+
+	if res.Error != nil {
+		t.Errorf("Expected nil error got: %v", res.Error)
+	}
+
+	if res.Job.ID != job.ID {
+		t.Errorf("Expected job in results %v to match sent job %v", res.Job.ID, job.ID)
+	}
+}
