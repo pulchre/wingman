@@ -198,8 +198,7 @@ func (s *TestServer) Initialize(stream pb.Processor_InitializeServer) error {
 			return nil
 		}
 		if err != nil {
-			// return err
-			panic(err)
+			return err
 		}
 
 		switch in.GetType() {

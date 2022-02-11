@@ -142,6 +142,12 @@ func (s *Subprocess) Start() error {
 
 			s.wg.Wait()
 
+			// If this shutdown message is received while
+			// processing an event, the WaitGroup will release
+			// immediately and the process will exit before GRPC
+			// sends the message causing the manager to hang.
+			time.Sleep(50 * time.Millisecond)
+
 			s.clientStreamMu.Lock()
 			s.clientStream.CloseSend()
 			s.clientStreamMu.Unlock()
