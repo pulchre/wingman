@@ -14,6 +14,7 @@ enum Type {
 	JOB = 2;
 	RESULT = 3;
 	SHUTDOWN = 4;
+	DONE = 5;
 }
 
 message Message {

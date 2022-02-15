@@ -28,7 +28,8 @@ type Subprocess struct {
 
 	signalChan chan os.Signal
 
-	wg sync.WaitGroup
+	wg       sync.WaitGroup
+	signalWg sync.WaitGroup
 }
 
 func NewSubprocess() (*Subprocess, error) {
@@ -71,7 +72,7 @@ func (s *Subprocess) Start() error {
 
 	s.signalChan = make(chan os.Signal, 32)
 	signal.Notify(s.signalChan, unix.SIGTERM, unix.SIGINT)
-	s.wg.Add(1)
+	s.signalWg.Add(1)
 	go s.signalWatcher()
 
 	msg := &pb.Message{
@@ -131,35 +132,50 @@ func (s *Subprocess) Start() error {
 				Error:       errMsg,
 			}
 
+			s.clientStreamMu.Lock()
 			senderr := s.clientStream.SendMsg(result)
 			if senderr != nil {
 				wingman.Log.Print("Failed to send job result jobid=%v joberr=%v err=%v",
 					id, err, senderr)
 			}
+			s.clientStreamMu.Unlock()
 		case pb.Type_SHUTDOWN:
 			wingman.Log.Printf("Subprocess pid=%v received shutdown message", s.pid)
-			close(s.signalChan)
 
 			s.wg.Wait()
 
-			// If this shutdown message is received while
-			// processing an event, the WaitGroup will release
-			// immediately and the process will exit before GRPC
-			// sends the message causing the manager to hang.
-			time.Sleep(50 * time.Millisecond)
-
 			s.clientStreamMu.Lock()
-			s.clientStream.CloseSend()
+			msg := &pb.Message{
+				Type: pb.Type_DONE,
+			}
+
+			senderr := s.clientStream.SendMsg(msg)
+			if senderr != nil {
+				wingman.Log.Printf("Failed to send shutdown message. Subprocess will die. err=`%v`", senderr)
+				s.closeConnection()
+				return senderr
+			}
 			s.clientStreamMu.Unlock()
 
+		case pb.Type_DONE:
+			s.closeConnection()
+			s.signalWg.Wait()
 			return nil
 		default:
 		}
 	}
 }
 
+func (s *Subprocess) closeConnection() {
+	s.clientStreamMu.Lock()
+	defer s.clientStreamMu.Unlock()
+
+	close(s.signalChan)
+	s.clientStream.CloseSend()
+}
+
 func (s *Subprocess) signalWatcher() {
-	defer s.wg.Done()
+	defer s.signalWg.Done()
 
 	for sig := range s.signalChan {
 		wingman.Log.Printf(`Subprocessor pid=%v received signal="%v" ignoring`, s.pid, sig)

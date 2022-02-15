@@ -203,6 +203,13 @@ func (s *TestServer) Initialize(stream pb.Processor_InitializeServer) error {
 
 		switch in.GetType() {
 		case pb.Type_RESULT:
+		case pb.Type_DONE:
+			err := stream.Send(&pb.Message{
+				Type: pb.Type_DONE,
+			})
+			if err != nil {
+				panic(err)
+			}
 		default:
 			s.t.Fatalf("Received unexpected message type: %s", in.Job.GetTypeName())
 		}

@@ -111,6 +111,8 @@ func (s *Manager) Start() error {
 	s.running = false
 	s.mu.Unlock()
 
+	<-s.pool.Done()
+
 	Log.Print("Wingman shutdown gracefully")
 
 	return nil
@@ -136,8 +138,6 @@ func (s *Manager) Stop() {
 	// example, we may never execute code below this line since the program
 	// will exit when Start is returned.
 	s.wg.Wait()
-
-	<-s.pool.Done()
 
 	s.shutdownSignalHandler()
 	s.signalWg.Wait()

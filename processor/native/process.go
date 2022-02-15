@@ -28,6 +28,7 @@ type process struct {
 	opts             PoolOptions
 	handleUpdateChan chan handleUpdate
 	cmd              *exec.Cmd
+	doneChan         chan struct{}
 
 	serverStream   pb.Processor_InitializeServer
 	serverStreamMu sync.Mutex
@@ -64,6 +65,7 @@ func newProcess(opts PoolOptions) *process {
 		handleUpdateChan: make(chan handleUpdate, opts.Concurrency*2),
 		handles:          make(map[uuid.UUID]*handle),
 		signalChan:       make(chan os.Signal, 32),
+		doneChan:         make(chan struct{}, 0),
 	}
 }
 
@@ -72,6 +74,9 @@ func (p *process) updates() <-chan handleUpdate {
 }
 
 func (p *process) sendJob(job wingman.InternalJob, h *handle) error {
+	p.serverStreamMu.Lock()
+	defer p.serverStreamMu.Unlock()
+
 	if p.serverStream == nil {
 		return fmt.Errorf("Processor not connected")
 	}
@@ -153,6 +158,7 @@ func (p *process) Start() error {
 	p.wg.Add(1)
 	go func() {
 		p.cmd.Wait()
+		wingman.Log.Printf("Dead subprocess pid=%d", p.cmd.Process.Pid)
 
 		p.handleMu.Lock()
 		for _, h := range p.handles {
@@ -161,6 +167,9 @@ func (p *process) Start() error {
 		p.handleMu.Unlock()
 
 		p.wg.Done()
+
+		p.closeUpdateChan()
+		close(p.doneChan)
 	}()
 
 	return nil
@@ -211,10 +220,7 @@ func (p *process) Kill() error {
 		err = nil
 	}
 
-	if p.handleUpdateChan != nil {
-		close(p.handleUpdateChan)
-		p.handleUpdateChan = nil
-	}
+	p.closeUpdateChan()
 
 	p.wg.Clear()
 
@@ -283,6 +289,23 @@ func (p *process) handleStream(stream pb.Processor_InitializeServer) error {
 
 			handle.setStatus(wingman.ProcessorStatusIdle)
 			close(handle.doneChan)
+		case pb.Type_DONE:
+			p.serverStreamMu.Lock()
+
+			msg := &pb.Message{
+				Type: pb.Type_DONE,
+			}
+
+			err = p.serverStream.Send(msg)
+			if err != nil {
+				wingman.Log.Printf("Failed to send subprocess done message. Killing subprocess err=`%v`", err)
+				err = p.Kill()
+				if err != nil {
+					wingman.Log.Printf("Failed to kill subprocess. err=`%v`", err)
+				}
+			}
+
+			p.serverStreamMu.Unlock()
 		default:
 			wingman.Log.Print(in.GetType().String())
 		}
@@ -302,7 +325,20 @@ func (p *process) handleFromID(id uuid.UUID) *handle {
 	defer p.handleMu.Unlock()
 
 	return p.handles[id]
+}
 
+func (p *process) Done() <-chan struct{} { return p.doneChan }
+
+func (p *process) closeUpdateChan() {
+	p.handleMu.Lock()
+	defer p.handleMu.Unlock()
+
+	if p.handleUpdateChan == nil {
+		return
+	}
+
+	close(p.handleUpdateChan)
+	p.handleUpdateChan = nil
 }
 
 // TODO: This should be moved to the GRPC package

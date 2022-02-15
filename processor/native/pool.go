@@ -120,8 +120,9 @@ func (p *Pool) start() error {
 
 		p.processes[process.Pid()] = process
 
-		p.wg.Add(1)
+		p.wg.Add(2)
 		go p.watchHandleUpdates(process)
+		go p.waitForProcessorDone(process)
 	}
 
 	return nil
@@ -177,11 +178,7 @@ func (p *Pool) Put(id string) {
 		return
 	}
 
-	if p.shutdown {
-		if len(p.busy) == 1 {
-			p.shutdownCond.Broadcast()
-		}
-	} else {
+	if !p.shutdown {
 		p.available = append(p.available, p.busy[i])
 	}
 	p.busy = append(p.busy[:i], p.busy[i+1:]...)
@@ -284,6 +281,20 @@ func (p *Pool) watchHandleUpdates(process *process) {
 	}
 }
 
+func (p *Pool) waitForProcessorDone(process *process) {
+	defer p.wg.Done()
+
+	<-process.Done()
+
+	p.cond.L.Lock()
+	defer p.cond.L.Unlock()
+	p.shutdownCond.L.Lock()
+	defer p.shutdownCond.L.Unlock()
+
+	delete(p.processes, process.Pid())
+	p.shutdownCond.Broadcast()
+}
+
 func (p *Pool) sendDone() {
 	p.doneMu.Lock()
 	defer p.doneMu.Unlock()
@@ -321,7 +332,7 @@ func (p *Pool) closeProcessors(block bool) {
 		}(proc)
 	}
 
-	if block && len(p.busy) > 0 {
+	for block && len(p.processes) > 0 {
 		p.shutdownCond.Wait()
 	}
 }
