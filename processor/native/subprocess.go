@@ -99,46 +99,8 @@ func (s *Subprocess) Start() error {
 		case pb.Type_HEARTBEAT:
 			s.lastHeartbeat = time.Now()
 		case pb.Type_JOB:
-			id, err := uuid.FromBytes(in.GetJob().GetID())
-			if err != nil {
-				wingman.Log.Print("Failed to deserialize job id=%v", id)
-				continue
-			}
-
-			job := wingman.InternalJob{
-				ID:       id,
-				TypeName: in.GetJob().TypeName,
-			}
-
-			job.Job, err = wingman.DeserializeJob(job.TypeName, in.GetJob().Payload)
-			if err != nil {
-				wingman.Log.Printf("Failed to deserialize job jobid=%v", job.ID)
-			}
-
-			// TODO: This needs to be done in the background so we
-			// can properly handle greater than 1 concurrency.
-			handleJob(ctx, job, &err)
-			var errMsg *pb.Error
-			if err != nil {
-				errMsg = &pb.Error{
-					Message: err.Error(),
-				}
-			}
-
-			result := &pb.Message{
-				Type:        pb.Type_RESULT,
-				ProcessorID: in.GetProcessorID(),
-				Job:         in.GetJob(),
-				Error:       errMsg,
-			}
-
-			s.clientStreamMu.Lock()
-			senderr := s.clientStream.SendMsg(result)
-			if senderr != nil {
-				wingman.Log.Print("Failed to send job result jobid=%v joberr=%v err=%v",
-					id, err, senderr)
-			}
-			s.clientStreamMu.Unlock()
+			s.wg.Add(1)
+			go s.handleJob(ctx, in)
 		case pb.Type_SHUTDOWN:
 			wingman.Log.Printf("Subprocess pid=%v received shutdown message", s.pid)
 
@@ -182,12 +144,54 @@ func (s *Subprocess) signalWatcher() {
 	}
 }
 
-func handleJob(ctx context.Context, job wingman.InternalJob, err *error) {
+func (s *Subprocess) handleJob(ctx context.Context, in *pb.Message) {
+	defer s.wg.Done()
+
+	id, err := uuid.FromBytes(in.GetJob().GetID())
+	if err != nil {
+		wingman.Log.Print("Failed to deserialize job id=%v", id)
+		return
+	}
+
+	job := wingman.InternalJob{
+		ID:       id,
+		TypeName: in.GetJob().TypeName,
+	}
+
+	job.Job, err = wingman.DeserializeJob(job.TypeName, in.GetJob().Payload)
+	if err != nil {
+		wingman.Log.Printf("Failed to deserialize job jobid=%v", job.ID)
+	}
+
+	defer func() {
+		var errMsg *pb.Error
+		if err != nil {
+			errMsg = &pb.Error{
+				Message: err.Error(),
+			}
+		}
+
+		result := &pb.Message{
+			Type:        pb.Type_RESULT,
+			ProcessorID: in.GetProcessorID(),
+			Job:         in.GetJob(),
+			Error:       errMsg,
+		}
+
+		s.clientStreamMu.Lock()
+		senderr := s.clientStream.SendMsg(result)
+		if senderr != nil {
+			wingman.Log.Print("Failed to send job result jobid=%v joberr=%v err=%v",
+				id, err, senderr)
+		}
+		s.clientStreamMu.Unlock()
+	}()
+
 	defer func() {
 		if recoveredErr := recover(); recoveredErr != nil {
-			*err = wingman.NewError(recoveredErr)
+			err = wingman.NewError(recoveredErr)
 		}
 	}()
 
-	*err = job.Job.Handle(ctx)
+	err = job.Job.Handle(ctx)
 }
