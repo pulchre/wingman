@@ -241,6 +241,7 @@ func (s *Manager) waitForResults(p Processor) {
 		}
 	}
 
+	s.backend.ClearProcessor(p.Id())
 	<-p.Done()
 	s.pool.Put(p.Id())
 }

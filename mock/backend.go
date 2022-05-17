@@ -184,6 +184,11 @@ func (b *Backend) Size(queue string) int { return len(b.queues[queue]) }
 
 func (b *Backend) Close() error { return nil }
 
+func (b *Backend) HasProcessingJob(processorID string) bool {
+	_, ok := b.working[processorID]
+	return ok
+}
+
 func (b Backend) resolveSplatQueue(queue string) string {
 	if queue == "*" {
 		for k, v := range b.queues {

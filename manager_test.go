@@ -75,8 +75,11 @@ func TestStartJobProcessSuccessfully(t *testing.T) {
 	var jobWg sync.WaitGroup
 	var processed bool
 
+	var processorID string
+
 	mock.RegisterHandler(handlerName, func(ctx context.Context, job wingman.Job) error {
 		defer jobWg.Done()
+		processorID = ctx.Value(wingman.ContextProcessorIDKey).(string)
 
 		j := job.(mock.Job)
 
@@ -99,6 +102,12 @@ func TestStartJobProcessSuccessfully(t *testing.T) {
 
 	if !processed {
 		t.Errorf("Expected job to process")
+	}
+
+	backend := backendToMockBackend(s)
+
+	if backend.HasProcessingJob(processorID) {
+		t.Errorf("Expected processing marker to be removed from the backend")
 	}
 
 	mock.CleanupHandlers()
