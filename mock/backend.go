@@ -18,6 +18,7 @@ type Backend struct {
 	queues  map[string][]*wingman.InternalJob
 	staging map[uuid.UUID]*wingman.InternalJob
 	working map[string]*wingman.InternalJob
+	failed  map[string]*wingman.InternalJob
 
 	stopping bool
 	notifier *sync.Cond
@@ -29,6 +30,7 @@ func NewBackend() *Backend {
 		queues:             make(map[string][]*wingman.InternalJob),
 		staging:            make(map[uuid.UUID]*wingman.InternalJob),
 		working:            make(map[string]*wingman.InternalJob),
+		failed:             make(map[string]*wingman.InternalJob),
 		notifier:           sync.NewCond(&sync.Mutex{}),
 	}
 }
@@ -122,6 +124,21 @@ func (b *Backend) ClearProcessor(processorID string) error {
 	b.notifier.L.Lock()
 	defer b.notifier.L.Unlock()
 
+	delete(b.working, processorID)
+
+	return nil
+}
+
+func (b *Backend) FailJob(processorID string) error {
+	b.notifier.L.Lock()
+	defer b.notifier.L.Unlock()
+
+	job, ok := b.working[processorID]
+	if !ok {
+		return wingman.ErrorJobNotFound
+	}
+
+	b.failed[job.ID.String()] = job
 	delete(b.working, processorID)
 
 	return nil

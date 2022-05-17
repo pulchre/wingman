@@ -15,6 +15,7 @@ import (
 
 const stagingQueue = "wingman:__staging"
 const processorFmt = "wingman:processing:%v"
+const failedFmt = "wingman:failed:%v"
 
 type response struct {
 	Job   wingman.InternalJob
@@ -145,7 +146,7 @@ func (b Backend) PopAndStageJob(ctx context.Context, queue string) (*wingman.Int
 	return job, nil
 }
 
-func (b Backend) ProcessJob(stagingID, processID string) error {
+func (b Backend) ProcessJob(stagingID, processorID string) error {
 	client, err := b.getClient()
 	if err != nil {
 		return err
@@ -159,7 +160,7 @@ func (b Backend) ProcessJob(stagingID, processID string) error {
 		return wingman.ErrorJobNotStaged
 	}
 
-	_, err = client.conn.Do("LMOVE", fmtStagingKey(stagingID), fmtProcessingKey(processID), "LEFT", "RIGHT")
+	_, err = client.conn.Do("LMOVE", fmtStagingKey(stagingID), fmtProcessingKey(processorID), "LEFT", "RIGHT")
 	if err != nil {
 		return err
 	}
@@ -202,6 +203,32 @@ func (b Backend) ClearProcessor(processorID string) error {
 
 	_, err = client.conn.Do("DEL", fmtProcessingKey(processorID))
 
+	return err
+}
+
+func (b Backend) FailJob(processorID string) error {
+	client, err := b.getClient()
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	raw, err := redis.ByteSlices(client.conn.Do("LRANGE", fmtProcessingKey(processorID), -1, -1))
+	if err != nil {
+		return err
+	}
+
+	if len(raw) < 1 {
+		return wingman.ErrorJobNotFound
+
+	}
+
+	job, err := wingman.InternalJobFromJSON(raw[0])
+	if err != nil {
+		return err
+	}
+
+	_, err = client.conn.Do("LMOVE", fmtProcessingKey(processorID), fmtFailedKey(job.ID.String()), "RIGHT", "RIGHT")
 	return err
 }
 
@@ -345,4 +372,8 @@ func fmtStagingKey(id string) string {
 
 func fmtProcessingKey(id string) string {
 	return fmt.Sprintf(processorFmt, id)
+}
+
+func fmtFailedKey(id string) string {
+	return fmt.Sprintf(failedFmt, id)
 }

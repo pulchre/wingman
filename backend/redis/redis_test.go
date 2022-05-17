@@ -246,6 +246,38 @@ func TestClearProcessorSuccess(t *testing.T) {
 	}
 }
 
+func TestFailJob(t *testing.T) {
+	c := testClient(t)
+	defer c.Close()
+
+	job := mock.NewWrappedJob()
+
+	raw, err := json.Marshal(job)
+	if err != nil {
+		panic(err)
+	}
+
+	processorID := "processor_1"
+	_, err = c.do("RPUSH", fmtProcessingKey(processorID), raw)
+	if err != nil {
+		t.Fatal("Failed to push data to redis with error: ", err)
+	}
+
+	err = c.FailJob(processorID)
+	if err != nil {
+		t.Error("Expected nil error, got: ", err)
+	}
+
+	keys, err := redis.Strings(c.do("KEYS", fmtFailedKey(job.ID.String())))
+	if err != nil {
+		t.Fatal("Failed to retrieve key with error: ", err)
+	}
+
+	if len(keys) != 1 {
+		t.Error("Expected 1 job to be moved, got: ", len(keys))
+	}
+}
+
 func TestReenqueueStagedJob(t *testing.T) {
 	t.Run("Success", testReenqueueStagedJobSuccess)
 	t.Run("InvalidJob", testReenqueueStagedJobInvalidJob)

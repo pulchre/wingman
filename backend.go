@@ -32,6 +32,9 @@ type Backend interface {
 	// ClearProcessor removes the job from the given processor.
 	ClearProcessor(processorID string) error
 
+	// FailJob marks a currently marked processing job as failed.
+	FailJob(processorID string) error
+
 	// ReenqueueStagedJob pushes a staged job back onto the queue.
 	ReenqueueStagedJob(stagingID string) error
 

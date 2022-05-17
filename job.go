@@ -11,6 +11,7 @@ import (
 )
 
 var ErrorJobNotStaged = errors.New("Could not find staged job")
+var ErrorJobNotFound = errors.New("Could not find any job")
 
 // Job is the interface definition for a given job. Handler should return the
 // name of the handler that this job will be processed by. Payload should be
