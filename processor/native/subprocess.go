@@ -193,5 +193,5 @@ func (s *Subprocess) handleJob(ctx context.Context, in *pb.Message) {
 		}
 	}()
 
-	err = job.Job.Handle(ctx)
+	err = job.Job.Handle(context.WithValue(ctx, wingman.ContextProcessorIDKey, string(in.GetProcessorID())))
 }
