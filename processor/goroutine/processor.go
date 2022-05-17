@@ -86,7 +86,7 @@ func (p *Processor) SendJob(job wingman.InternalJob) error {
 
 	p.wg.Add(1)
 	p.working = true
-	ctx, p.cancel = context.WithCancel(context.Background())
+	ctx, p.cancel = context.WithCancel(context.WithValue(context.Background(), wingman.ContextProcessorIDKey, p.Id()))
 
 	p.setStatus(wingman.ProcessorStatusWorking)
 
