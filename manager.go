@@ -213,18 +213,18 @@ func (s *Manager) handleJob(ctx context.Context, p Processor, job InternalJob) {
 		return
 	}
 
-	err := s.backend.ProcessJob(job.StagingID.String(), p.Id())
+	err := s.backend.ProcessJob(job.StagingID.String(), p.ID())
 	if err != nil {
 		Log.Printf("Failed to move job id=%v to processing on the backend err=%v", job.ID, err)
-		s.pool.Put(p.Id())
+		s.pool.Put(p.ID())
 		return
 	}
 
 	Log.Printf("Handling job id=%v", job.ID)
 	err = p.SendJob(job)
 	if err != nil {
-		s.failJob(p.Id(), job)
-		s.pool.Put(p.Id())
+		s.failJob(p.ID(), job)
+		s.pool.Put(p.ID())
 		Log.Printf("Failed to send job to processor: %v", err)
 		return
 	}
@@ -238,14 +238,14 @@ func (s *Manager) waitForResults(p Processor) {
 
 	for res := range p.Results() {
 		if res.Error != nil {
-			s.failJob(p.Id(), res.Job)
+			s.failJob(p.ID(), res.Job)
 			Log.Printf("Job %v failed with error: %v", res.Job.ID, res.Error)
 		}
 	}
 
-	s.backend.ClearProcessor(p.Id())
+	s.backend.ClearProcessor(p.ID())
 	<-p.Done()
-	s.pool.Put(p.Id())
+	s.pool.Put(p.ID())
 }
 
 func (s *Manager) failJob(processorID string, job InternalJob) {

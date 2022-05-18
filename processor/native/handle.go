@@ -25,7 +25,7 @@ func newHandle(process *process) *handle {
 	}
 }
 
-func (h *handle) Id() string { return h.id.String() }
+func (h *handle) ID() string { return h.id.String() }
 
 func (h *handle) SendJob(job wingman.InternalJob) error {
 	h.resultChan = make(chan wingman.ResultMessage)
@@ -55,5 +55,5 @@ func (h *handle) setStatus(s wingman.ProcessorStatus) {
 	defer h.statusMu.Unlock()
 
 	h.status = s
-	wingman.Log.Printf("Processor id=%v status=%v", h.Id(), wingman.ProcessorStatuses[s])
+	wingman.Log.Printf("Processor id=%v status=%v", h.ID(), wingman.ProcessorStatuses[s])
 }

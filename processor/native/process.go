@@ -91,14 +91,14 @@ func (p *process) sendJob(job wingman.InternalJob, h *handle) error {
 		return err
 	}
 
-	processorId, err := h.id.MarshalBinary()
+	processorID, err := h.id.MarshalBinary()
 	if err != nil {
 		return err
 	}
 
 	msg := &pb.Message{
 		Type:        pb.Type_JOB,
-		ProcessorID: processorId,
+		ProcessorID: processorID,
 		Job: &pb.Job{
 			ID:       id,
 			TypeName: job.TypeName,

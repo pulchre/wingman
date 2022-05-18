@@ -18,7 +18,7 @@ func TestHandle(t *testing.T) {
 	if p == nil {
 		t.Fatalf("Expected processor got nil")
 	}
-	defer pool.Put(p.Id())
+	defer pool.Put(p.ID())
 
 	if p.Results() != nil {
 		t.Error("Expected nil Results chan when no job is sent")

@@ -45,11 +45,11 @@ func TestPoolPut(t *testing.T) {
 		t.Error("Expected returned processor. Got nil")
 	}
 
-	p.Put(proc.Id())
+	p.Put(proc.ID())
 
 	proc2 := p.Get()
-	if proc.Id() != proc2.Id() {
-		t.Errorf("Expected processor to be reused with id: %s. Got: %s", proc.Id(), proc2.Id())
+	if proc.ID() != proc2.ID() {
+		t.Errorf("Expected processor to be reused with id: %s. Got: %s", proc.ID(), proc2.ID())
 	}
 
 	// Should not panic!
@@ -66,10 +66,10 @@ func TestPoolClose(t *testing.T) {
 	proc4 := p.Get()
 
 	go func() {
-		p.Put(proc1.Id())
-		p.Put(proc2.Id())
-		p.Put(proc3.Id())
-		p.Put(proc4.Id())
+		p.Put(proc1.ID())
+		p.Put(proc2.ID())
+		p.Put(proc3.ID())
+		p.Put(proc4.ID())
 	}()
 
 	p.Close()

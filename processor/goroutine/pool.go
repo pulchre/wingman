@@ -152,7 +152,7 @@ func (p *Pool) closeDone() {
 
 func index(id string, a []*Processor) (int, bool) {
 	for i, p := range a {
-		if p.Id() == id {
+		if p.ID() == id {
 			return i, true
 		}
 	}

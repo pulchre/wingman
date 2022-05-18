@@ -51,7 +51,7 @@ func TestGet(t *testing.T) {
 
 	p2 := pool.Get()
 	if p2 != nil {
-		t.Fatalf("Expected nil processor, got processor with id: %s", p2.Id())
+		t.Fatalf("Expected nil processor, got processor with id: %s", p2.ID())
 	}
 
 	pool.ForceClose()
@@ -69,14 +69,14 @@ func TestPut(t *testing.T) {
 		t.Fatal("Failed to get processor")
 	}
 
-	pool.Put(p.Id())
+	pool.Put(p.ID())
 
 	// Nothing should happen
-	pool.Put(p.Id())
+	pool.Put(p.ID())
 
 	p2 := pool.Get()
-	if p2.Id() != p.Id() {
-		t.Errorf("Unknown processor returned: %s. Expected: %s", p2.Id(), p.Id())
+	if p2.ID() != p.ID() {
+		t.Errorf("Unknown processor returned: %s. Expected: %s", p2.ID(), p.ID())
 	}
 
 	pool.ForceClose()

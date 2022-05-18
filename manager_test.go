@@ -156,7 +156,7 @@ func TestStartJobProcessError(t *testing.T) {
 	s.Stop()
 	wg.Wait()
 
-	if !mock.TestLog.PrintReceived(fmt.Sprintf("Job %v failed with error: %v", backendToMockBackend(s).LastAddedId, jobErr)) {
+	if !mock.TestLog.PrintReceived(fmt.Sprintf("Job %v failed with error: %v", backendToMockBackend(s).LastAddedID, jobErr)) {
 		t.Errorf("Expected log when job processing fails. Got: %v", mock.TestLog.PrintVars)
 	}
 }
@@ -197,7 +197,7 @@ func TestStartJobProcessPanic(t *testing.T) {
 	s.Stop()
 	wg.Wait()
 
-	if !mock.TestLog.PrintReceived(fmt.Sprintf("Job %v failed with error: %v", backendToMockBackend(s).LastAddedId, wingman.NewError(panicMsg))) {
+	if !mock.TestLog.PrintReceived(fmt.Sprintf("Job %v failed with error: %v", backendToMockBackend(s).LastAddedID, wingman.NewError(panicMsg))) {
 		t.Errorf("Expected log when job panics. Got: %v", mock.TestLog.PrintVars)
 	}
 }

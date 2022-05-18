@@ -13,11 +13,11 @@ func TestStart(t *testing.T) {
 	p := NewProcessor()
 
 	p.Start()
-	if !mock.TestLog.PrintReceived(fmt.Sprintf("Processor id=%v status=starting", p.Id())) {
+	if !mock.TestLog.PrintReceived(fmt.Sprintf("Processor id=%v status=starting", p.ID())) {
 		t.Errorf("Expected to receive `starting` status for processor")
 	}
 
-	if !mock.TestLog.PrintReceived(fmt.Sprintf("Processor id=%v status=idle", p.Id())) {
+	if !mock.TestLog.PrintReceived(fmt.Sprintf("Processor id=%v status=idle", p.ID())) {
 		t.Errorf("Expected to receive `idle` status for processor")
 	}
 }
@@ -28,12 +28,12 @@ func TestStop(t *testing.T) {
 
 	p.Start()
 	p.Stop()
-	if !mock.TestLog.PrintReceived(fmt.Sprintf("Processor id=%v status=stopping", p.Id())) {
+	if !mock.TestLog.PrintReceived(fmt.Sprintf("Processor id=%v status=stopping", p.ID())) {
 		t.Errorf("Expected to receive `stopping` status for processor")
 	}
 
 	time.Sleep(10 * time.Millisecond)
-	if !mock.TestLog.PrintReceived(fmt.Sprintf("Processor id=%v status=dead", p.Id())) {
+	if !mock.TestLog.PrintReceived(fmt.Sprintf("Processor id=%v status=dead", p.ID())) {
 		t.Errorf("Expected to receive `dead` status for processor")
 	}
 }
@@ -50,7 +50,7 @@ func TestSendJob(t *testing.T) {
 		t.Fatalf("goroutine SendJob should never return a non-nil error: %v", err)
 	}
 
-	if !mock.TestLog.PrintReceived(fmt.Sprintf("Processor id=%v status=working", p.Id())) {
+	if !mock.TestLog.PrintReceived(fmt.Sprintf("Processor id=%v status=working", p.ID())) {
 		t.Errorf("Expected to receive `working` status for processor")
 	}
 

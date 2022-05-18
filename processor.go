@@ -27,7 +27,7 @@ type ContextKey string
 const ContextProcessorIDKey = ContextKey("processorID")
 
 type Processor interface {
-	Id() string
+	ID() string
 	SendJob(InternalJob) error
 	Results() <-chan ResultMessage
 	Kill() error

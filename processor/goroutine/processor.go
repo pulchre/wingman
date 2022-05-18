@@ -37,7 +37,7 @@ func NewProcessor() *Processor {
 	return p
 }
 
-func (p *Processor) Id() string {
+func (p *Processor) ID() string {
 	return p.id.String()
 }
 
@@ -86,7 +86,7 @@ func (p *Processor) SendJob(job wingman.InternalJob) error {
 
 	p.wg.Add(1)
 	p.working = true
-	ctx, p.cancel = context.WithCancel(context.WithValue(context.Background(), wingman.ContextProcessorIDKey, p.Id()))
+	ctx, p.cancel = context.WithCancel(context.WithValue(context.Background(), wingman.ContextProcessorIDKey, p.ID()))
 
 	p.setStatus(wingman.ProcessorStatusWorking)
 
@@ -139,5 +139,5 @@ func (p *Processor) setStatus(s wingman.ProcessorStatus) {
 	defer p.statusMu.Unlock()
 
 	p.status = s
-	wingman.Log.Printf("Processor id=%v status=%v", p.Id(), wingman.ProcessorStatuses[s])
+	wingman.Log.Printf("Processor id=%v status=%v", p.ID(), wingman.ProcessorStatuses[s])
 }

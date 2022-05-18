@@ -12,7 +12,7 @@ import (
 var NoQueueError = errors.New("Job must specify a queue")
 
 type Backend struct {
-	LastAddedId        uuid.UUID
+	LastAddedID        uuid.UUID
 	NextJobCanceledErr error
 
 	queues  map[string][]*wingman.InternalJob
@@ -56,7 +56,7 @@ func (b *Backend) PushJob(job wingman.Job) error {
 
 	b.notifier.Broadcast()
 
-	b.LastAddedId = intJob.ID
+	b.LastAddedID = intJob.ID
 	return nil
 }
 

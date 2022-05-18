@@ -271,7 +271,7 @@ func (p *Pool) watchHandleUpdates(process *process) {
 			p.available = append(p.available, msg.Handle)
 			p.cond.Broadcast()
 		case handleStateDead:
-			if i, ok := index(msg.Handle.Id(), p.available); ok {
+			if i, ok := index(msg.Handle.ID(), p.available); ok {
 				p.available = append(p.available[:i], p.available[i+1:]...)
 			}
 
@@ -339,7 +339,7 @@ func (p *Pool) closeProcessors(block bool) {
 
 func index(id string, a []*handle) (int, bool) {
 	for i, p := range a {
-		if p.Id() == id {
+		if p.ID() == id {
 			return i, true
 		}
 	}
