@@ -1,197 +1,214 @@
 package native
 
 import (
-	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
-	"strconv"
+	"os/exec"
+	"strings"
 	"sync"
-	"time"
 
-	"github.com/google/uuid"
 	"github.com/pulchre/wingman"
 	pb "github.com/pulchre/wingman/grpc"
-	"golang.org/x/sys/unix"
-	"google.golang.org/grpc"
 )
 
-type Subprocess struct {
-	port          int
-	pid           int
-	lastHeartbeat time.Time
+const ClientEnvironmentName = "WINGMAN_NATIVE_CLIENT"
 
-	clientStream   pb.Processor_InitializeClient
-	clientStreamMu sync.Mutex
+var bin, binErr = os.Executable()
 
-	signalChan chan os.Signal
+type subprocess struct {
+	cmd      *exec.Cmd
+	doneChan chan struct{}
+	errChan  chan error
 
-	wg       sync.WaitGroup
-	signalWg sync.WaitGroup
+	serverStream   pb.Processor_InitializeServer
+	serverStreamMu sync.Mutex
+
+	server *Server
+
+	working   int
+	workingMu sync.Mutex
+
+	wg wingman.WaitGroup
 }
 
-func NewSubprocess() (*Subprocess, error) {
-	s := &Subprocess{
-		pid:  os.Getpid(),
-		port: DefaultPort,
+func init() {
+	if binErr != nil {
+		panic(fmt.Sprintf("Could not find binary path %v", binErr))
 	}
 
-	portEnv := os.Getenv("WINGMAN_NATIVE_PORT")
+	binOverride := strings.TrimSpace(os.Getenv("WINGMAN_NATIVE_BIN"))
+	if binOverride != "" {
+		bin = binOverride
+	}
+}
 
-	if portEnv != "" {
-		port, err := strconv.Atoi(portEnv)
+func newSubprocess(server *Server) *subprocess {
+	return &subprocess{
+		server:   server,
+		doneChan: make(chan struct{}),
+		errChan:  make(chan error, 1),
+	}
+}
+
+func (p *subprocess) start() error {
+	var err error
+
+	defer func() {
 		if err != nil {
-			return nil, fmt.Errorf("Unable to parse port: %v", err)
+			if p.cmd.Process != nil {
+				p.cmd.Process.Kill()
+			}
+
+			p.cmd = nil
+		}
+	}()
+
+	p.cmd = exec.Command(bin)
+	p.cmd.Stdout = os.Stdout
+	p.cmd.Stderr = os.Stderr
+
+	p.cmd.Env = make([]string, len(os.Environ())+2)
+	p.cmd.Env[0] = fmt.Sprintf("%s=1", ClientEnvironmentName)
+	p.cmd.Env[1] = fmt.Sprintf("%s=%d", PortEnvironmentName, p.server.opts.Port)
+	for i, e := range os.Environ() {
+		p.cmd.Env[i+2] = e
+	}
+
+	err = p.cmd.Start()
+	if err != nil {
+		return err
+	}
+	wingman.Log.Printf("Starting subprocess pid=%d", p.cmd.Process.Pid)
+
+	p.wg.Add(1)
+	go func() {
+		p.cmd.Wait()
+		wingman.Log.Printf("Dead subprocess pid=%d", p.cmd.Process.Pid)
+
+		if !p.cmd.ProcessState.Success() {
+			p.errChan <- errors.New("Processed exited with failure")
 		}
 
-		s.port = port
-	}
+		close(p.errChan)
 
-	return s, nil
+		p.wg.Done()
+
+		close(p.doneChan)
+	}()
+
+	return nil
 }
 
-func (s *Subprocess) Start() error {
-	wingman.Log.Printf("Subprocess connecting pid=%v", s.pid)
+func (p *subprocess) sendJob(job *wingman.InternalJob) error {
+	p.serverStreamMu.Lock()
+	defer p.serverStreamMu.Unlock()
 
-	// TODO: Add timeout
-	conn, err := grpc.Dial(fmt.Sprintf("localhost:%d", s.port), grpc.WithInsecure())
+	if p.serverStream == nil {
+		return fmt.Errorf("Processor not connected")
+	}
+
+	payload, err := json.Marshal(job.Job)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
-	connClient := pb.NewProcessorClient(conn)
-
-	ctx := context.Background()
-	s.clientStreamMu.Lock()
-	s.clientStream, err = connClient.Initialize(ctx)
-	if err != nil {
-		return err
-	}
-
-	s.signalChan = make(chan os.Signal, 32)
-	signal.Notify(s.signalChan, unix.SIGTERM, unix.SIGINT)
-	s.signalWg.Add(1)
-	go s.signalWatcher()
 
 	msg := &pb.Message{
-		Type:      pb.Type_CONNECT,
-		ProcessID: int64(s.pid),
+		Type: pb.Type_JOB,
+		Job: &pb.Job{
+			ID:       job.ID,
+			TypeName: job.TypeName,
+			Payload:  payload,
+		},
 	}
 
-	err = s.clientStream.Send(msg)
+	wingman.Log.Printf("Sending job id=%s pid=%d", job.ID, p.cmd.Process.Pid)
+	err = p.serverStream.Send(msg)
 	if err != nil {
 		return err
 	}
-	s.clientStreamMu.Unlock()
+
+	return nil
+}
+
+func (s *subprocess) handleStream(stream pb.Processor_InitializeServer) error {
+	wingman.Log.Printf("Subprocess connected pid=%v", s.cmd.Process.Pid)
+
+	s.serverStreamMu.Lock()
+	s.serverStream = stream
+	s.serverStreamMu.Unlock()
 
 	for {
-		in, err := s.clientStream.Recv()
-		if errors.Is(err, io.EOF) {
+		in, err := s.serverStream.Recv()
+		if err == io.EOF {
 			return nil
-		}
-		if err != nil {
+		} else if err != nil {
 			return err
 		}
 
-		switch in.GetType() {
-		case pb.Type_HEARTBEAT:
-			s.lastHeartbeat = time.Now()
-		case pb.Type_JOB:
-			s.wg.Add(1)
-			go s.handleJob(ctx, in)
-		case pb.Type_SHUTDOWN:
-			wingman.Log.Printf("Subprocess pid=%v received shutdown message", s.pid)
-
-			s.wg.Wait()
-
-			s.clientStreamMu.Lock()
-			msg := &pb.Message{
-				Type: pb.Type_DONE,
+		switch in.Type {
+		case pb.Type_RESULT:
+			parsedJob, err := deserializeJob(in.Job)
+			if err != nil {
+				wingman.Log.Printf("Error parsing job in response message: %v, %v", err, in.Job)
+				continue
 			}
 
-			senderr := s.clientStream.SendMsg(msg)
-			if senderr != nil {
-				wingman.Log.Printf("Failed to send shutdown message. Subprocess will die. err=`%v`", senderr)
-				s.closeConnection()
-				return senderr
+			var processErr error
+			if in.Error != nil {
+				processErr = errors.New(in.Error.Message)
 			}
-			s.clientStreamMu.Unlock()
 
-		case pb.Type_DONE:
-			s.closeConnection()
-			s.signalWg.Wait()
-			return nil
+			s.workingMu.Lock()
+			s.working -= 1
+			s.workingMu.Unlock()
+
+			s.server.finishJob(parsedJob, processErr)
 		default:
+			wingman.Log.Print(in.Type)
 		}
 	}
 }
 
-func (s *Subprocess) closeConnection() {
-	s.clientStreamMu.Lock()
-	defer s.clientStreamMu.Unlock()
+func (p *subprocess) sendShutdown() error {
+	p.serverStreamMu.Lock()
+	defer p.serverStreamMu.Unlock()
 
-	close(s.signalChan)
-	s.clientStream.CloseSend()
+	if p.serverStream == nil {
+		return nil
+	}
+
+	return p.serverStream.Send(&pb.Message{
+		Type: pb.Type_SHUTDOWN,
+	})
 }
 
-func (s *Subprocess) signalWatcher() {
-	defer s.signalWg.Done()
-
-	for sig := range s.signalChan {
-		wingman.Log.Printf(`Subprocessor pid=%v received signal="%v" ignoring`, s.pid, sig)
+func (p *subprocess) Pid() int {
+	if p.cmd == nil || p.cmd.Process == nil {
+		return -1
 	}
+
+	return p.cmd.Process.Pid
 }
 
-func (s *Subprocess) handleJob(ctx context.Context, in *pb.Message) {
-	defer s.wg.Done()
+func (p *subprocess) Done() <-chan struct{} { return p.doneChan }
+func (p *subprocess) Error() <-chan error   { return p.errChan }
 
-	id, err := uuid.FromBytes(in.GetJob().GetID())
-	if err != nil {
-		wingman.Log.Print("Failed to deserialize job id=%v", id)
-		return
-	}
+// TODO: This should be moved to the GRPC package
+func deserializeJob(msg *pb.Job) (*wingman.InternalJob, error) {
+	var err error
 
 	job := wingman.InternalJob{
-		ID:       id,
-		TypeName: in.GetJob().TypeName,
+		ID:       msg.ID,
+		TypeName: msg.TypeName,
 	}
 
-	job.Job, err = wingman.DeserializeJob(job.TypeName, in.GetJob().Payload)
+	job.Job, err = wingman.DeserializeJob(job.TypeName, msg.Payload)
 	if err != nil {
-		wingman.Log.Printf("Failed to deserialize job jobid=%v", job.ID)
+		return &wingman.InternalJob{}, err
 	}
 
-	defer func() {
-		var errMsg *pb.Error
-		if err != nil {
-			errMsg = &pb.Error{
-				Message: err.Error(),
-			}
-		}
-
-		result := &pb.Message{
-			Type:        pb.Type_RESULT,
-			ProcessorID: in.GetProcessorID(),
-			Job:         in.GetJob(),
-			Error:       errMsg,
-		}
-
-		s.clientStreamMu.Lock()
-		senderr := s.clientStream.SendMsg(result)
-		if senderr != nil {
-			wingman.Log.Print("Failed to send job result jobid=%v joberr=%v err=%v",
-				id, err, senderr)
-		}
-		s.clientStreamMu.Unlock()
-	}()
-
-	defer func() {
-		if recoveredErr := recover(); recoveredErr != nil {
-			err = wingman.NewError(recoveredErr)
-		}
-	}()
-
-	err = job.Job.Handle(context.WithValue(ctx, wingman.ContextProcessorIDKey, string(in.GetProcessorID())))
+	return &job, nil
 }
