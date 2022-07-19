@@ -5,139 +5,140 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/pulchre/wingman"
 )
 
+func init() {
+	wingman.NewProcessor = NewProcessor
+}
+
 type Processor struct {
-	id      uuid.UUID
-	cancel  context.CancelFunc
-	working bool
-	mu      sync.Mutex
-	wg      sync.WaitGroup
+	options ProcessorOptions
 
-	status     wingman.ProcessorStatus
-	statusMu   sync.Mutex
-	statusChan chan wingman.ProcessorStatus
-	stopping   bool
-	doneChan   chan struct{}
+	capacityCond *sync.Cond
+	working      map[string]workingJob
+	stopping     bool
 
-	resultChan chan wingman.ResultMessage
+	wg wingman.WaitGroup
+
+	baseCtx context.Context
+
+	resultMu      sync.Mutex
+	resultsClosed bool
+	resultsChan   chan wingman.ResultMessage
+	doneChan      chan struct{}
 }
 
-func NewProcessor() *Processor {
-	p := &Processor{
-		id:         uuid.New(),
-		resultChan: make(chan wingman.ResultMessage, 64),
-		statusChan: make(chan wingman.ProcessorStatus, 64),
+type workingJob struct {
+	ID        string
+	Cancel    context.CancelFunc
+	StartTime time.Time
+}
+
+func NewProcessor(options interface{}) (wingman.Processor, error) {
+	opts := options.(ProcessorOptions)
+	if opts.Concurrency < 1 {
+		opts.Concurrency = 1
 	}
-	p.setStatus(wingman.ProcessorStatusStarting)
-	p.setStatus(wingman.ProcessorStatusIdle)
 
-	return p
-}
+	p := &Processor{
+		options:      opts,
+		capacityCond: sync.NewCond(new(sync.Mutex)),
+		working:      make(map[string]workingJob),
+		baseCtx:      context.Background(),
+		resultsChan:  make(chan wingman.ResultMessage, 64),
+		doneChan:     make(chan struct{}),
+	}
 
-func (p *Processor) ID() string {
-	return p.id.String()
+	return p, nil
 }
 
 func (p *Processor) Start() error {
-	p.setStatus(wingman.ProcessorStatusStarting)
-	p.setStatus(wingman.ProcessorStatusIdle)
 	return nil
 }
 
-func (p *Processor) Stop() error {
-	p.mu.Lock()
-	p.setStatus(wingman.ProcessorStatusStopping)
-	p.stopping = true
-	if p.cancel != nil {
-		p.cancel()
+func (p *Processor) Close() {
+	p.wg.Wait()
+
+	p.resultMu.Lock()
+	defer p.resultMu.Unlock()
+	p.resultsClosed = true
+	close(p.resultsChan)
+	close(p.doneChan)
+}
+
+func (p *Processor) Wait() bool {
+	p.capacityCond.L.Lock()
+	defer p.capacityCond.L.Unlock()
+
+	if len(p.working) < p.options.Concurrency {
+		return true
 	}
-	p.mu.Unlock()
 
-	go func() {
-		p.wg.Wait()
-		p.setStatus(wingman.ProcessorStatusDead)
+	p.capacityCond.Wait()
 
-	}()
-
-	return nil
+	return len(p.working) < p.options.Concurrency
 }
 
-func (p *Processor) Kill() error {
-	return nil
+func (p *Processor) Cancel() {
+	p.capacityCond.Signal()
 }
 
-func (p *Processor) Working() bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+func (p *Processor) Working() int {
+	p.capacityCond.L.Lock()
+	defer p.capacityCond.L.Unlock()
 
-	return p.working
+	return len(p.working)
 }
 
-func (p *Processor) SendJob(job wingman.InternalJob) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
+func (p *Processor) SendJob(job *wingman.InternalJob) error {
 	var ctx context.Context
-	p.resultChan = make(chan wingman.ResultMessage, 64)
-	p.doneChan = make(chan struct{})
+
+	p.capacityCond.L.Lock()
+	ctx, cancel := context.WithCancel(context.WithValue(p.baseCtx, wingman.ContextJobIDKey, job.ID))
+	p.working[job.ID] = workingJob{
+		ID:        job.ID,
+		Cancel:    cancel,
+		StartTime: time.Now(),
+	}
+	p.capacityCond.L.Unlock()
 
 	p.wg.Add(1)
-	p.working = true
-	ctx, p.cancel = context.WithCancel(context.WithValue(context.Background(), wingman.ContextProcessorIDKey, p.ID()))
-
-	p.setStatus(wingman.ProcessorStatusWorking)
-
 	go func() {
-		defer p.wg.Done()
-		defer func() {
-			p.mu.Lock()
-			defer p.mu.Unlock()
-			if !p.stopping {
-				p.setStatus(wingman.ProcessorStatusIdle)
-			}
-			close(p.doneChan)
-		}()
 		var err error
 
-		start := time.Now()
-		defer func() {
-			end := time.Now()
-			wingman.Log.Printf("Job %s done after %s", job.ID, end.Sub(start))
+		defer p.wg.Done()
 
+		defer func() {
 			if recoveredErr := recover(); recoveredErr != nil {
 				err = wingman.NewError(recoveredErr)
 			}
 
-			p.mu.Lock()
-			p.working = false
-			p.cancel = nil
-			p.mu.Unlock()
+			p.capacityCond.L.Lock()
+			defer p.capacityCond.L.Unlock()
 
-			p.resultChan <- wingman.ResultMessage{
+			delete(p.working, job.ID)
+			p.capacityCond.Signal()
+
+			p.resultMu.Lock()
+			defer p.resultMu.Unlock()
+
+			if p.resultsClosed {
+				return
+			}
+
+			p.resultsChan <- wingman.ResultMessage{
 				Job:   job,
 				Error: err,
 			}
-			close(p.resultChan)
 		}()
 
-		wingman.Log.Printf("Job %s started...", job.ID)
 		err = job.Job.Handle(ctx)
 	}()
 
 	return nil
 }
 
-func (p *Processor) Results() <-chan wingman.ResultMessage        { return p.resultChan }
-func (p *Processor) StatusChange() <-chan wingman.ProcessorStatus { return p.statusChan }
-func (p *Processor) Done() <-chan struct{}                        { return p.doneChan }
-
-func (p *Processor) setStatus(s wingman.ProcessorStatus) {
-	p.statusMu.Lock()
-	defer p.statusMu.Unlock()
-
-	p.status = s
-	wingman.Log.Printf("Processor id=%v status=%v", p.ID(), wingman.ProcessorStatuses[s])
-}
+func (p *Processor) Results() <-chan wingman.ResultMessage { return p.resultsChan }
+func (p *Processor) Done() <-chan struct{}                 { return p.doneChan }
+func (p *Processor) ForceClose()                           { p.wg.Clear() }

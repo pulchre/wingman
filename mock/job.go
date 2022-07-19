@@ -2,6 +2,7 @@ package mock
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/pulchre/wingman"
@@ -18,10 +19,19 @@ type Job struct {
 	Data            string
 	HandlerOverride string
 	QueueOverride   string
+	Processed       bool
 }
 
 func init() {
-	wingman.RegisterJobType(Job{})
+	wingman.RegisterJobType(&Job{})
+	addDefaultHandlers()
+}
+
+func addDefaultHandlers() {
+	RegisterHandler("10millisecondsleep", func(ctx context.Context, j wingman.Job) error {
+		time.Sleep(10 * time.Millisecond)
+		return nil
+	})
 }
 
 func RegisterHandler(name string, h HandlerSig) {
@@ -30,11 +40,12 @@ func RegisterHandler(name string, h HandlerSig) {
 
 func CleanupHandlers() {
 	handlers = make(map[string]HandlerSig)
+	addDefaultHandlers()
 }
 
-func NewJob() Job { return Job{Data: uuid.Must(uuid.NewRandom()).String()} }
+func NewJob() *Job { return &Job{Data: uuid.Must(uuid.NewRandom()).String()} }
 
-func NewWrappedJob() wingman.InternalJob {
+func NewWrappedJob() *wingman.InternalJob {
 	job, err := wingman.WrapJob(NewJob())
 	if err != nil {
 		panic(err)
@@ -43,7 +54,7 @@ func NewWrappedJob() wingman.InternalJob {
 	return job
 }
 
-func (j Job) InternalJob(queue string) wingman.InternalJob {
+func (j *Job) InternalJob(queue string) *wingman.InternalJob {
 	job, err := wingman.WrapJob(j)
 	if err != nil {
 		panic(err)
@@ -53,12 +64,13 @@ func (j Job) InternalJob(queue string) wingman.InternalJob {
 
 func (j Job) TypeName() string { return DefaultJobType }
 
-func (j Job) Handle(ctx context.Context) error {
+func (j *Job) Handle(ctx context.Context) error {
 	if j.HandlerOverride != "" {
 		handler := handlers[j.HandlerOverride]
 		return handler(ctx, j)
 	}
 
+	j.Processed = true
 	return nil
 }
 

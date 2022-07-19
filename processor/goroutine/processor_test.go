@@ -1,65 +1,23 @@
 package goroutine
 
 import (
-	"fmt"
 	"testing"
 	"time"
 
+	"github.com/pulchre/wingman"
 	"github.com/pulchre/wingman/mock"
 )
 
-func TestStart(t *testing.T) {
-	mock.TestLog.Reset()
-	p := NewProcessor()
-
-	p.Start()
-	if !mock.TestLog.PrintReceived(fmt.Sprintf("Processor id=%v status=starting", p.ID())) {
-		t.Errorf("Expected to receive `starting` status for processor")
-	}
-
-	if !mock.TestLog.PrintReceived(fmt.Sprintf("Processor id=%v status=idle", p.ID())) {
-		t.Errorf("Expected to receive `idle` status for processor")
-	}
-}
-
-func TestStop(t *testing.T) {
-	mock.TestLog.Reset()
-	p := NewProcessor()
-
-	p.Start()
-	p.Stop()
-	if !mock.TestLog.PrintReceived(fmt.Sprintf("Processor id=%v status=stopping", p.ID())) {
-		t.Errorf("Expected to receive `stopping` status for processor")
-	}
-
-	time.Sleep(10 * time.Millisecond)
-	if !mock.TestLog.PrintReceived(fmt.Sprintf("Processor id=%v status=dead", p.ID())) {
-		t.Errorf("Expected to receive `dead` status for processor")
-	}
-}
-
 func TestSendJob(t *testing.T) {
-	mock.TestLog.Reset()
-	p := NewProcessor()
-
-	p.Start()
+	p, _ := NewProcessor(DefaultOptions().SetConcurrency(2))
 
 	job := mock.NewWrappedJob()
 	err := p.SendJob(job)
 	if err != nil {
-		t.Fatalf("goroutine SendJob should never return a non-nil error: %v", err)
-	}
-
-	if !mock.TestLog.PrintReceived(fmt.Sprintf("Processor id=%v status=working", p.ID())) {
-		t.Errorf("Expected to receive `working` status for processor")
+		t.Fatalf("Expected nil error, got: %v", err)
 	}
 
 	res := <-p.Results()
-	time.Sleep(10 * time.Millisecond)
-
-	if !mock.TestLog.PrintReceived(fmt.Sprintf("Job %s started...", job.ID)) {
-		t.Errorf("Expected to receive `working` status for processor")
-	}
 
 	if res.Error != nil {
 		t.Errorf("Expected nil error got: %v", res.Error)
@@ -68,4 +26,90 @@ func TestSendJob(t *testing.T) {
 	if res.Job.ID != job.ID {
 		t.Errorf("Expected job in results %v to match sent job %v", res.Job.ID, job.ID)
 	}
+
+	if !job.Job.(*mock.Job).Processed {
+		t.Error("Expected job to be processed")
+	}
+}
+
+func TestWait(t *testing.T) {
+	concurrency := 2
+	p, _ := NewProcessor(DefaultOptions().SetConcurrency(concurrency))
+
+	jobs := []*wingman.InternalJob{
+		mock.NewWrappedJob(),
+		mock.NewWrappedJob(),
+		mock.NewWrappedJob(),
+		mock.NewWrappedJob(),
+	}
+
+	for _, j := range jobs {
+		j.Job.(*mock.Job).HandlerOverride = "10millisecondsleep"
+
+		count := p.Working()
+		if count > concurrency {
+			t.Errorf("Working jobs should not exceed concurrency  = %d. %d", concurrency, count)
+		}
+
+		p.Wait()
+		p.SendJob(j)
+	}
+
+	p.Close()
+
+	responseCount := 0
+	for range p.Results() {
+		responseCount++
+	}
+
+	if responseCount != len(jobs) {
+		t.Error("Response count does not match job count: ", responseCount)
+	}
+
+	<-p.Done()
+}
+
+func TestClose(t *testing.T) {
+	p, _ := NewProcessor(DefaultOptions())
+
+	job := mock.NewWrappedJob()
+	job.Job.(*mock.Job).HandlerOverride = "10millisecondsleep"
+	err := p.SendJob(job)
+	if err != nil {
+		t.Fatalf("goroutine SendJob should never return a non-nil error: %v", err)
+	}
+
+	p.Close()
+	res := <-p.Results()
+	if res.Job.ID != job.ID {
+		t.Errorf("Expected correct job result %v, got: %v", job.ID, res.Job.ID)
+	}
+	<-p.Done()
+}
+
+func TestForceClose(t *testing.T) {
+	p, _ := NewProcessor(DefaultOptions())
+
+	job := mock.NewWrappedJob()
+	job.Job.(*mock.Job).HandlerOverride = "10millisecondsleep"
+	err := p.SendJob(job)
+	if err != nil {
+		t.Fatalf("goroutine SendJob should never return a non-nil error: %v", err)
+	}
+
+	c := make(chan struct{}, 0)
+	go func() {
+		defer close(c)
+		p.Close()
+	}()
+
+	p.ForceClose()
+
+	res := <-p.Results()
+	if res.Job != nil {
+		t.Errorf("Expected nil result, got: %v", res)
+	}
+	<-p.Done()
+	<-c
+	time.Sleep(200 * time.Millisecond)
 }

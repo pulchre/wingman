@@ -2,6 +2,7 @@ package mock
 
 import (
 	"fmt"
+	"regexp"
 	"sync"
 
 	"github.com/pulchre/wingman"
@@ -86,6 +87,21 @@ func (l *TestLogger) PrintReceived(v string) bool {
 
 	for _, msg := range l.PrintVars {
 		if v == msg {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (l *TestLogger) PrintReceivedRegex(v string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	r := regexp.MustCompile(v)
+
+	for _, msg := range l.PrintVars {
+		if r.MatchString(msg) {
 			return true
 		}
 	}

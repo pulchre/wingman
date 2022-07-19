@@ -5,18 +5,17 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/google/uuid"
 	"github.com/pulchre/wingman"
 )
 
 var NoQueueError = errors.New("Job must specify a queue")
 
 type Backend struct {
-	LastAddedID        uuid.UUID
+	LastAddedID        string
 	NextJobCanceledErr error
 
 	queues  map[string][]*wingman.InternalJob
-	staging map[uuid.UUID]*wingman.InternalJob
+	staging map[string]*wingman.InternalJob
 	working map[string]*wingman.InternalJob
 	failed  map[string]*wingman.InternalJob
 
@@ -28,7 +27,7 @@ func NewBackend() *Backend {
 	return &Backend{
 		NextJobCanceledErr: wingman.ErrCanceled,
 		queues:             make(map[string][]*wingman.InternalJob),
-		staging:            make(map[uuid.UUID]*wingman.InternalJob),
+		staging:            make(map[string]*wingman.InternalJob),
 		working:            make(map[string]*wingman.InternalJob),
 		failed:             make(map[string]*wingman.InternalJob),
 		notifier:           sync.NewCond(&sync.Mutex{}),
@@ -52,7 +51,7 @@ func (b *Backend) PushJob(job wingman.Job) error {
 		b.queues[job.Queue()] = make([]*wingman.InternalJob, 0)
 	}
 
-	b.queues[job.Queue()] = append(b.queues[job.Queue()], &intJob)
+	b.queues[job.Queue()] = append(b.queues[job.Queue()], intJob)
 
 	b.notifier.Broadcast()
 
@@ -61,16 +60,14 @@ func (b *Backend) PushJob(job wingman.Job) error {
 }
 
 // PopAndStageJob assumes that only one goroutine is waiting on the notifier
-func (b *Backend) PopAndStageJob(context context.Context, queue string) (*wingman.InternalJob, error) {
-	var err error
-
+func (b *Backend) PopAndStageJob(ctx context.Context, queue string) (*wingman.InternalJob, error) {
 	b.notifier.L.Lock()
 
 	stop := make(chan struct{}, 1)
 	defer close(stop)
 	go func() {
 		select {
-		case <-context.Done():
+		case <-ctx.Done():
 		case <-stop:
 		}
 
@@ -87,11 +84,7 @@ func (b *Backend) PopAndStageJob(context context.Context, queue string) (*wingma
 
 		if len(b.queues[queue]) > 0 {
 			job := b.queues[queue][0]
-			job.StagingID, err = uuid.NewRandom()
-			if err != nil {
-				return nil, err
-			}
-
+			job.StagingID = job.ID
 			b.staging[job.StagingID] = job
 			b.queues[queue] = b.queues[queue][1:]
 
@@ -104,42 +97,40 @@ func (b *Backend) PopAndStageJob(context context.Context, queue string) (*wingma
 	return nil, b.NextJobCanceledErr
 }
 
-func (b *Backend) ProcessJob(stagingID, processorID string) error {
+func (b *Backend) ProcessJob(stagingID string) error {
 	b.notifier.L.Lock()
 	defer b.notifier.L.Unlock()
 
-	id := uuid.Must(uuid.Parse(stagingID))
-
-	job, ok := b.staging[id]
+	job, ok := b.staging[stagingID]
 	if !ok {
 		return wingman.ErrorJobNotStaged
 	}
 
-	b.working[processorID] = job
-	delete(b.staging, id)
+	b.working[stagingID] = job
+	delete(b.staging, stagingID)
 
 	return nil
 }
-func (b *Backend) ClearProcessor(processorID string) error {
+func (b *Backend) ClearJob(jobID string) error {
 	b.notifier.L.Lock()
 	defer b.notifier.L.Unlock()
 
-	delete(b.working, processorID)
+	delete(b.working, jobID)
 
 	return nil
 }
 
-func (b *Backend) FailJob(processorID string) error {
+func (b *Backend) FailJob(jobID string) error {
 	b.notifier.L.Lock()
 	defer b.notifier.L.Unlock()
 
-	job, ok := b.working[processorID]
+	job, ok := b.working[jobID]
 	if !ok {
 		return wingman.ErrorJobNotFound
 	}
 
-	b.failed[job.ID.String()] = job
-	delete(b.working, processorID)
+	b.failed[jobID] = job
+	delete(b.working, jobID)
 
 	return nil
 }
@@ -148,15 +139,13 @@ func (b *Backend) ReenqueueStagedJob(stagingID string) error {
 	b.notifier.L.Lock()
 	defer b.notifier.L.Unlock()
 
-	id := uuid.Must(uuid.Parse(stagingID))
-
-	job, ok := b.staging[id]
+	job, ok := b.staging[stagingID]
 	if !ok {
 		return wingman.ErrorJobNotStaged
 	}
 
 	b.queues[job.Queue()] = append(b.queues[job.Queue()], job)
-	delete(b.staging, id)
+	delete(b.staging, stagingID)
 
 	return nil
 }
@@ -180,7 +169,7 @@ func (b *Backend) ClearStagedJob(stagingID string) error {
 	b.notifier.L.Lock()
 	defer b.notifier.L.Unlock()
 
-	delete(b.staging, uuid.Must(uuid.Parse(stagingID)))
+	delete(b.staging, stagingID)
 
 	return nil
 }
