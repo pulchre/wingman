@@ -20,6 +20,8 @@ import (
 )
 
 const concurrencyCount = 2
+const timestampExpr = `[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([-|\+][0-9]{2}:[0-9]{2}|Z)`
+const durationExpr = `[0-9]+(\.[0-9]+)?(ns|µs|ms|s|m|h)`
 
 func init() {
 	// Call signal.Notify starts a goroutine which cannot be shut down
@@ -75,13 +77,10 @@ func TestStartJobProcessSuccessfully(t *testing.T) {
 	var jobWg sync.WaitGroup
 	var processed bool
 
-	var processorID string
-
 	mock.RegisterHandler(handlerName, func(ctx context.Context, job wingman.Job) error {
 		defer jobWg.Done()
-		processorID = ctx.Value(wingman.ContextProcessorIDKey).(string)
 
-		j := job.(mock.Job)
+		j := job.(*mock.Job)
 
 		if j != mockJob {
 			t.Errorf("Wrong job passed to handler. Got: %v, Expected: %v", j, mockJob)
@@ -102,12 +101,6 @@ func TestStartJobProcessSuccessfully(t *testing.T) {
 
 	if !processed {
 		t.Errorf("Expected job to process")
-	}
-
-	backend := backendToMockBackend(s)
-
-	if backend.HasProcessingJob(processorID) {
-		t.Errorf("Expected processing marker to be removed from the backend")
 	}
 
 	mock.CleanupHandlers()
@@ -135,7 +128,7 @@ func TestStartJobProcessError(t *testing.T) {
 	mock.RegisterHandler(handlerName, func(ctx context.Context, job wingman.Job) error {
 		defer jobWg.Done()
 
-		j := job.(mock.Job)
+		j := job.(*mock.Job)
 
 		if j != mockJob {
 			t.Errorf("Wrong job passed to handler. Got: %v, Expected: %v", j, mockJob)
@@ -149,14 +142,19 @@ func TestStartJobProcessError(t *testing.T) {
 	jobWg.Add(1)
 	wingman.ManagerBackend(s).PushJob(mockJob)
 	jobWg.Wait()
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	mock.CleanupHandlers()
 
 	s.Stop()
 	wg.Wait()
 
-	if !mock.TestLog.PrintReceived(fmt.Sprintf("Job %v failed with error: %v", backendToMockBackend(s).LastAddedID, jobErr)) {
+	if !mock.TestLog.PrintReceivedRegex(fmt.Sprintf("Job finished id=%v start=%v end=%v duration=%v err=%v",
+		backendToMockBackend(s).LastAddedID,
+		timestampExpr,
+		timestampExpr,
+		durationExpr,
+		jobErr)) {
 		t.Errorf("Expected log when job processing fails. Got: %v", mock.TestLog.PrintVars)
 	}
 }
@@ -173,7 +171,7 @@ func TestStartJobProcessPanic(t *testing.T) {
 	panicMsg := "Job panicked"
 
 	mock.RegisterHandler(handlerName, func(ctx context.Context, job wingman.Job) error {
-		j := job.(mock.Job)
+		j := job.(*mock.Job)
 
 		if j != mockJob {
 			t.Errorf("Wrong job passed to handler. Got: %v, Expected: %v", j, mockJob)
@@ -190,14 +188,19 @@ func TestStartJobProcessPanic(t *testing.T) {
 	jobWg.Wait()
 
 	// Make sure we don't miss the panic
-	time.Sleep(250 * time.Millisecond)
+	time.Sleep(150 * time.Millisecond)
 
 	mock.CleanupHandlers()
 
 	s.Stop()
 	wg.Wait()
 
-	if !mock.TestLog.PrintReceived(fmt.Sprintf("Job %v failed with error: %v", backendToMockBackend(s).LastAddedID, wingman.NewError(panicMsg))) {
+	if !mock.TestLog.PrintReceivedRegex(fmt.Sprintf("Job finished id=%v start=%v end=%v duration=%v err=%v",
+		backendToMockBackend(s).LastAddedID,
+		timestampExpr,
+		timestampExpr,
+		durationExpr,
+		wingman.NewError(panicMsg))) {
 		t.Errorf("Expected log when job panics. Got: %v", mock.TestLog.PrintVars)
 	}
 }
@@ -332,7 +335,7 @@ func setup() *wingman.Manager {
 			Backend: backend,
 			Queues:  []string{"*"},
 			Signals: []os.Signal{syscall.SIGUSR2},
-			PoolOptions: goroutine.PoolOptions{
+			ProcessorOptions: goroutine.ProcessorOptions{
 				Concurrency: 1,
 			},
 		},

@@ -16,7 +16,7 @@ type Backend interface {
 	PushJob(Job) error
 
 	// PopAndStageJob retrieves the next job from the queue, copies it to
-	// the staing area, and returns it. This should stage the job so that
+	// the staging area, and returns it. This should stage the job so that
 	// it can be recovered in the event of a hard shutdown.
 	//
 	// The context is be used for canceling this call as it may block
@@ -24,16 +24,16 @@ type Backend interface {
 	// failure.
 	PopAndStageJob(ctx context.Context, queue string) (*InternalJob, error)
 
-	// ProcessJob moves a job from staging to a processor. This is merely
-	// associates it to the processor. The real processing is handled by
-	// a processor.
-	ProcessJob(stagingID, processorID string) error
+	// ProcessJob moves a job from staging to processing. This is merely
+	// marks the job in the backend as processing. The real processing is
+	// handled by a processor.
+	ProcessJob(stagingID string) error
 
-	// ClearProcessor removes the job from the given processor.
-	ClearProcessor(processorID string) error
+	// ClearJob removes the job from processing.
+	ClearJob(jobID string) error
 
 	// FailJob marks a currently marked processing job as failed.
-	FailJob(processorID string) error
+	FailJob(jobID string) error
 
 	// ReenqueueStagedJob pushes a staged job back onto the queue.
 	ReenqueueStagedJob(stagingID string) error

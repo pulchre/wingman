@@ -1,6 +1,6 @@
 package wingman
 
 type ResultMessage struct {
-	Job   InternalJob
+	Job   *InternalJob
 	Error error
 }

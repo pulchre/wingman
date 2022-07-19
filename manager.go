@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"time"
 )
 
 const signalReceivedMsg = "Shutting down safely. Send signal again to shutdown immediately. Warning: data loss possible."
@@ -29,16 +30,17 @@ type Manager struct {
 	signalWg   sync.WaitGroup
 	signalMu   sync.Mutex
 
-	backend Backend
+	backend   Backend
+	processor Processor
 
-	pool ProcessorPool
+	workingJobs map[string]InternalJob
 }
 
 type ManagerOptions struct {
-	Backend     Backend
-	Queues      []string
-	Signals     []os.Signal
-	PoolOptions interface{}
+	Backend          Backend
+	Queues           []string
+	Signals          []os.Signal
+	ProcessorOptions interface{}
 }
 
 // NewManager returns a new manager with the given backend, watching the
@@ -46,16 +48,17 @@ type ManagerOptions struct {
 // standalone program as it starts subprocesses of itself to handle
 // parallelism.
 func NewManager(options ManagerOptions) (*Manager, error) {
-	pool, err := NewProcessorPool(options.PoolOptions)
+	processor, err := NewProcessor(options.ProcessorOptions)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Manager{
-		backend: options.Backend,
-		queues:  options.Queues,
-		signals: options.Signals,
-		pool:    pool,
+		backend:     options.Backend,
+		queues:      options.Queues,
+		signals:     options.Signals,
+		processor:   processor,
+		workingJobs: make(map[string]InternalJob),
 	}, nil
 }
 
@@ -75,9 +78,15 @@ func (s *Manager) Start() error {
 	s.running = true
 	ctx, s.cancel = context.WithCancel(context.Background())
 
+	err := s.processor.Start()
+	if err != nil {
+		s.running = false
+		return err
+	}
+
 	// This will throw any jobs that were popped off their queue but for
 	// which processing had not began.
-	err := s.reenqueueStagedJobs()
+	err = s.reenqueueStagedJobs()
 	if err != nil {
 		s.cancel()
 		s.running = false
@@ -97,6 +106,9 @@ func (s *Manager) Start() error {
 	}
 	s.mu.Unlock()
 
+	s.wg.Add(1)
+	go s.waitForResults()
+
 	// Queue watcher
 	s.wg.Add(len(s.queues))
 	for _, q := range s.queues {
@@ -111,9 +123,12 @@ func (s *Manager) Start() error {
 	s.running = false
 	s.mu.Unlock()
 
-	<-s.pool.Done()
+	<-s.processor.Done()
 
 	Log.Print("Wingman shutdown gracefully")
+
+	s.shutdownSignalHandler()
+	s.signalWg.Wait()
 
 	return nil
 }
@@ -127,25 +142,19 @@ func (s *Manager) Stop() {
 
 	s.stopping = true
 	s.cancel()
-	s.pool.Cancel()
+	s.processor.Cancel()
 
 	s.mu.Unlock()
 
-	s.pool.Close()
+	s.processor.Close()
 
-	// TODO: I don't think this is needed. We are waiting up in the Start
-	// method. In cases when Stop is called from the signal handler, for
-	// example, we may never execute code below this line since the program
-	// will exit when Start is returned.
 	s.wg.Wait()
-
-	s.shutdownSignalHandler()
 	s.signalWg.Wait()
 }
 
 func (s *Manager) shutdownSignalHandler() {
 	if s.signalChan != nil {
-		signal.Reset(s.signals...)
+		signal.Reset()
 		close(s.signalChan)
 		s.signalWg.Wait()
 	}
@@ -168,22 +177,22 @@ func (s *Manager) watchQueue(ctx context.Context, queue string) {
 				continue
 			}
 
-			p := s.pool.Get()
+			ok = s.processor.Wait()
 
-			if p == nil {
-				s.backend.ReenqueueStagedJob(job.StagingID.String())
+			if !ok {
+				s.backend.ReenqueueStagedJob(job.StagingID)
 				continue
 			}
 
-			s.handleJob(ctx, p, job)
+			s.handleJob(ctx, job)
 		case <-ctx.Done():
 			return
 		}
 	}
 }
 
-func (s *Manager) retrieveJob(ctx context.Context, queue string) <-chan InternalJob {
-	jobChan := make(chan InternalJob, 1)
+func (s *Manager) retrieveJob(ctx context.Context, queue string) <-chan *InternalJob {
+	jobChan := make(chan *InternalJob, 1)
 
 	s.wg.Add(1)
 	go func() {
@@ -199,13 +208,13 @@ func (s *Manager) retrieveJob(ctx context.Context, queue string) <-chan Internal
 			return
 		}
 
-		jobChan <- *job
+		jobChan <- job
 	}()
 
 	return jobChan
 }
 
-func (s *Manager) handleJob(ctx context.Context, p Processor, job InternalJob) {
+func (s *Manager) handleJob(ctx context.Context, job *InternalJob) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -213,45 +222,56 @@ func (s *Manager) handleJob(ctx context.Context, p Processor, job InternalJob) {
 		return
 	}
 
-	err := s.backend.ProcessJob(job.StagingID.String(), p.ID())
+	err := s.backend.ProcessJob(job.StagingID)
 	if err != nil {
 		Log.Printf("Failed to move job id=%v to processing on the backend err=%v", job.ID, err)
-		s.pool.Put(p.ID())
 		return
 	}
 
-	Log.Printf("Handling job id=%v", job.ID)
-	err = p.SendJob(job)
+	job.StartTime = time.Now()
+	s.workingJobs[job.ID] = *job
+
+	Log.Printf("Handling job id=%v start=%v", job.ID, job.StartTime.Format(time.RFC3339))
+	err = s.processor.SendJob(job)
 	if err != nil {
-		s.failJob(p.ID(), job)
-		s.pool.Put(p.ID())
-		Log.Printf("Failed to send job to processor: %v", err)
+		s.failJob(job)
+		Log.Printf("Failed to send job id=%s to processor err=%v", job.ID, err)
 		return
 	}
-
-	s.wg.Add(1)
-	go s.waitForResults(p)
 }
 
-func (s *Manager) waitForResults(p Processor) {
+func (s *Manager) waitForResults() {
 	defer s.wg.Done()
 
-	for res := range p.Results() {
-		if res.Error != nil {
-			s.failJob(p.ID(), res.Job)
-			Log.Printf("Job %v failed with error: %v", res.Job.ID, res.Error)
+	for res := range s.processor.Results() {
+		s.mu.Lock()
+		res.Job.StartTime = s.workingJobs[res.Job.ID].StartTime
+		res.Job.EndTime = time.Now()
+		delete(s.workingJobs, res.Job.ID)
+		s.mu.Unlock()
+
+		Log.Printf(
+			"Job finished id=%v start=%v end=%v duration=%v err=%v",
+			res.Job.ID,
+			res.Job.StartTime.Format(time.RFC3339),
+			res.Job.EndTime.Format(time.RFC3339),
+			res.Job.EndTime.Sub(res.Job.StartTime),
+			res.Error,
+		)
+
+		if res.Error == nil {
+			s.backend.ClearJob(res.Job.ID)
+		} else {
+			s.failJob(res.Job)
 		}
 	}
 
-	s.backend.ClearProcessor(p.ID())
-	<-p.Done()
-	s.pool.Put(p.ID())
 }
 
-func (s *Manager) failJob(processorID string, job InternalJob) {
-	err := s.backend.FailJob(processorID)
+func (s *Manager) failJob(job *InternalJob) {
+	err := s.backend.FailJob(job.ID)
 	if err != nil {
-		Log.Printf("Failed to move job %v status to failed with error: %v", job.ID, err)
+		Log.Printf("Failed to move job jobid=%v status to failed with error: err=%v", job.ID, err)
 	}
 }
 
@@ -270,7 +290,7 @@ func (s *Manager) waitForSignal() {
 					Log.Print(signalReceivedMsg)
 					go s.Stop()
 				} else if i > 1 {
-					s.pool.ForceClose()
+					s.processor.ForceClose()
 					done = true
 				}
 			} else {
@@ -292,7 +312,7 @@ func (s *Manager) reenqueueStagedJobs() error {
 	}
 
 	for _, j := range jobs {
-		err = s.backend.ReenqueueStagedJob(j.StagingID.String())
+		err = s.backend.ReenqueueStagedJob(j.StagingID)
 		if err == ErrorJobNotStaged {
 			Log.Print("Failed to reenqueue staged job staging_id=%v", j.StagingID)
 		} else if err != nil {

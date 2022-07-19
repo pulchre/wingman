@@ -2,20 +2,18 @@ package wingman_test
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/pulchre/wingman"
 	"github.com/pulchre/wingman/mock"
 )
 
 func TestWrapJob(t *testing.T) {
-	j := mock.Job{}
+	j := mock.NewJob()
 	rawJ, _ := wingman.WrapJob(j)
 
-	if rawJ.ID == uuid.Nil {
-		t.Error("Should have uuid")
+	if rawJ.ID == "" {
+		t.Error("Should have an ID")
 	}
 
 	if rawJ.TypeName != j.TypeName() {
@@ -34,7 +32,6 @@ func TestInternalJobQueue(t *testing.T) {
 func TestJobUmarshalJSON(t *testing.T) {
 	t.Run("Success", testJobUnmarshalJSONSuccess)
 	t.Run("Not JSON", testJobUnmarshalJSONNotJson)
-	t.Run("Native Type Fail", testJobUnmarshalJSONNativeTypeFail)
 	t.Run("JobType Fail", testJobUnmarshalJSONJobTypeFail)
 }
 
@@ -54,16 +51,6 @@ func testJobUnmarshalJSONNotJson(t *testing.T) {
 	}
 }
 
-func testJobUnmarshalJSONNativeTypeFail(t *testing.T) {
-	j := buildJob()
-	str := mustMarshalJob(j)
-	str = []byte(strings.Replace(string(str), j.ID.String(), "invalid", 1))
-
-	if err := json.Unmarshal([]byte(str), &j); err == nil || err.Error() != "invalid UUID length: 7" {
-		t.Errorf("Expected error parsing ID, `%v`", err)
-	}
-}
-
 func testJobUnmarshalJSONJobTypeFail(t *testing.T) {
 	j := buildJob()
 	j.TypeName = "unknown type"
@@ -74,7 +61,7 @@ func testJobUnmarshalJSONJobTypeFail(t *testing.T) {
 	}
 }
 
-func buildJob() wingman.InternalJob {
+func buildJob() *wingman.InternalJob {
 	j, err := wingman.WrapJob(mock.NewJob())
 	if err != nil {
 		panic(err)
@@ -83,7 +70,7 @@ func buildJob() wingman.InternalJob {
 	return j
 }
 
-func mustMarshalJob(j wingman.InternalJob) []byte {
+func mustMarshalJob(j *wingman.InternalJob) []byte {
 	b, err := json.Marshal(j)
 	if err != nil {
 		panic(err)

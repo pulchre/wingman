@@ -6,9 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"time"
 
 	"github.com/google/uuid"
 )
+
+// ContextKey defines the type for our context value keys. We need this per the
+// documentation for Context that states that the keys should not be a standard
+// type.
+type ContextKey string
+
+// ContextProcessorIDKey is the key under which the processor ID is stored.
+const ContextJobIDKey = ContextKey("jobID")
 
 var ErrorJobNotStaged = errors.New("Could not find staged job")
 var ErrorJobNotFound = errors.New("Could not find any job")
@@ -42,13 +51,18 @@ func RegisterJobType(job Job) {
 // InternalJob is used by a backend and holds the id and type name for
 // deserialization. This should only be used by backend code.
 type InternalJob struct {
-	ID        uuid.UUID
-	TypeName  string
-	Job       Job
-	StagingID uuid.UUID `json:"-"`
+	ID       string
+	TypeName string
+	Job      Job
 
-	Ctx    context.Context    `json:"-"`
-	Cancel context.CancelFunc `json:"-"`
+	StartTime time.Time `json:"-"`
+	EndTime   time.Time `json:"-"`
+
+	// We use StagingID instead of the job ID itself because we want to
+	// keep the job in the backend we are finished with it so that we don't
+	// lose any data. So when we pop off a job from the queue, we won't
+	// know what the job ID is. Thus we use StagingID.
+	StagingID string `json:"-"`
 }
 
 // InternalJobFromJSON is a helper intended for use by backends to deserialize
@@ -64,11 +78,11 @@ func InternalJobFromJSON(b []byte) (*InternalJob, error) {
 	return job, nil
 }
 
-func WrapJob(j Job) (InternalJob, error) {
+func WrapJob(j Job) (*InternalJob, error) {
 	id, err := uuid.NewRandom()
 
-	return InternalJob{
-		ID:       id,
+	return &InternalJob{
+		ID:       id.String(),
 		TypeName: j.TypeName(),
 		Job:      j,
 	}, err
@@ -106,13 +120,19 @@ func (j *InternalJob) UnmarshalJSON(b []byte) error {
 }
 
 func DeserializeJob(typeName string, val []byte) (Job, error) {
+	var job Job
+
 	jobType := registeredJobTypes[typeName]
 	if jobType == nil {
 		return nil, fmt.Errorf("Job type `%s` is not registered", typeName)
 	}
 
 	reflectType := reflect.TypeOf(jobType)
-	job := reflect.New(reflectType).Interface().(Job)
+	if reflectType.Kind() == reflect.Pointer {
+		job = reflect.New(reflectType.Elem()).Interface().(Job)
+	} else {
+		job = reflect.New(reflectType).Interface().(Job)
+	}
 
 	err := json.Unmarshal(val, &job)
 	if err != nil {
