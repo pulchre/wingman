@@ -13,7 +13,7 @@ import (
 	"github.com/pulchre/wingman"
 )
 
-const stagingQueue = "wingman:__staging"
+const stagingQueueFmt = "wingman:staging:%v"
 const processorFmt = "wingman:processing:%v"
 const failedFmt = "wingman:failed:%v"
 
@@ -141,12 +141,12 @@ func (b Backend) PopAndStageJob(ctx context.Context, queue string) (*wingman.Int
 		return nil, err
 	}
 
-	job.StagingID = stagingID
+	job.StagingID = stagingID.String()
 
 	return job, nil
 }
 
-func (b Backend) ProcessJob(stagingID, processorID string) error {
+func (b Backend) ProcessJob(stagingID string) error {
 	client, err := b.getClient()
 	if err != nil {
 		return err
@@ -160,7 +160,12 @@ func (b Backend) ProcessJob(stagingID, processorID string) error {
 		return wingman.ErrorJobNotStaged
 	}
 
-	_, err = client.conn.Do("LMOVE", fmtStagingKey(stagingID), fmtProcessingKey(processorID), "LEFT", "RIGHT")
+	job, err := wingman.InternalJobFromJSON(raw[0])
+	if err != nil {
+		return wingman.ErrorJobNotStaged
+	}
+
+	_, err = client.conn.Do("LMOVE", fmtStagingKey(stagingID), fmtProcessingKey(job.ID), "LEFT", "RIGHT")
 	if err != nil {
 		return err
 	}
@@ -194,41 +199,26 @@ func (b Backend) ReenqueueStagedJob(stagingID string) error {
 	return nil
 }
 
-func (b Backend) ClearProcessor(processorID string) error {
+func (b Backend) ClearJob(jobID string) error {
 	client, err := b.getClient()
 	if err != nil {
 		return err
 	}
 	defer client.Close()
 
-	_, err = client.conn.Do("DEL", fmtProcessingKey(processorID))
+	_, err = client.conn.Do("DEL", fmtProcessingKey(jobID))
 
 	return err
 }
 
-func (b Backend) FailJob(processorID string) error {
+func (b Backend) FailJob(jobID string) error {
 	client, err := b.getClient()
 	if err != nil {
 		return err
 	}
 	defer client.Close()
 
-	raw, err := redis.ByteSlices(client.conn.Do("LRANGE", fmtProcessingKey(processorID), -1, -1))
-	if err != nil {
-		return err
-	}
-
-	if len(raw) < 1 {
-		return wingman.ErrorJobNotFound
-
-	}
-
-	job, err := wingman.InternalJobFromJSON(raw[0])
-	if err != nil {
-		return err
-	}
-
-	_, err = client.conn.Do("LMOVE", fmtProcessingKey(processorID), fmtFailedKey(job.ID.String()), "RIGHT", "RIGHT")
+	_, err = client.conn.Do("LMOVE", fmtProcessingKey(jobID), fmtFailedKey(jobID), "RIGHT", "RIGHT")
 	return err
 }
 
@@ -239,7 +229,7 @@ func (b Backend) StagedJobs() ([]*wingman.InternalJob, error) {
 	}
 	defer client.Close()
 
-	keys, err := redis.Strings(client.conn.Do("KEYS", fmt.Sprintf("%v:*", stagingQueue)))
+	keys, err := redis.Strings(client.conn.Do("KEYS", fmtStagingKey("*")))
 	if err != nil {
 		return nil, err
 	}
@@ -258,7 +248,7 @@ func (b Backend) StagedJobs() ([]*wingman.InternalJob, error) {
 		}
 
 		split := strings.Split(key, ":")
-		job.StagingID = uuid.Must(uuid.Parse(split[2]))
+		job.StagingID = split[2]
 
 		jobs[i] = job
 	}
@@ -367,7 +357,7 @@ func (c clientCanceller) Close() error {
 }
 
 func fmtStagingKey(id string) string {
-	return fmt.Sprintf("%s:%s", stagingQueue, id)
+	return fmt.Sprintf(stagingQueueFmt, id)
 }
 
 func fmtProcessingKey(id string) string {

@@ -105,7 +105,7 @@ func testPopAndStageJobSuccess(t *testing.T) {
 		t.Errorf("Expected input and output to be equal. In: %v. Out: %v", raw, job)
 	}
 
-	stagedJob, err := b.Peek(fmt.Sprintf("%s:%s", stagingQueue, job.StagingID.String()))
+	stagedJob, err := b.Peek(fmtStagingKey(job.StagingID))
 	if err != nil {
 		panic(err)
 	}
@@ -175,7 +175,6 @@ func testProcessJobSuccess(t *testing.T) {
 
 	initialJob := mock.NewWrappedJob()
 	stagingID := uuid.Must(uuid.NewRandom())
-	processorID := "processor1"
 
 	raw, err := json.Marshal(initialJob)
 	if err != nil {
@@ -187,12 +186,12 @@ func testProcessJobSuccess(t *testing.T) {
 		t.Fatal("Failed to add job to redis: ", err)
 	}
 
-	err = b.ProcessJob(stagingID.String(), processorID)
+	err = b.ProcessJob(stagingID.String())
 	if err != nil {
 		t.Fatal("Expected nil error, got: ", err)
 	}
 
-	retrieved, err := redis.ByteSlices(b.do("LRANGE", fmtProcessingKey(processorID), 0, 1))
+	retrieved, err := redis.ByteSlices(b.do("LRANGE", fmtProcessingKey(initialJob.ID), 0, 1))
 	if err != nil {
 		t.Fatal("Failed to retrieve job from redis ", err)
 	}
@@ -212,9 +211,8 @@ func testProcessJobNoJob(t *testing.T) {
 	defer b.Close()
 
 	stagingID := uuid.Must(uuid.NewRandom())
-	processorID := "processor1"
 
-	err := b.ProcessJob(stagingID.String(), processorID)
+	err := b.ProcessJob(stagingID.String())
 	if err != wingman.ErrorJobNotStaged {
 		t.Errorf("Expected: %v, got: %v", wingman.ErrorJobNotStaged, err)
 	}
@@ -224,19 +222,19 @@ func TestClearProcessorSuccess(t *testing.T) {
 	b := testClient(t)
 	defer b.Close()
 
-	processorID := "processor_1"
+	jobID := "job1"
 
-	_, err := b.do("RPUSH", fmtProcessingKey(processorID), "some job")
+	_, err := b.do("RPUSH", fmtProcessingKey(jobID), "some job")
 	if err != nil {
 		t.Fatal("Failed to push data to redis with error: ", err)
 	}
 
-	err = b.ClearProcessor(processorID)
+	err = b.ClearJob(jobID)
 	if err != nil {
 		t.Error("Expected nil error, got: ", err)
 	}
 
-	keys, err := redis.Strings(b.do("KEYS", fmtProcessingKey(processorID)))
+	keys, err := redis.Strings(b.do("KEYS", fmtProcessingKey(jobID)))
 	if err != nil {
 		t.Fatal("Failed to retrieve key with error: ", err)
 	}
@@ -257,18 +255,17 @@ func TestFailJob(t *testing.T) {
 		panic(err)
 	}
 
-	processorID := "processor_1"
-	_, err = c.do("RPUSH", fmtProcessingKey(processorID), raw)
+	_, err = c.do("RPUSH", fmtProcessingKey(job.ID), raw)
 	if err != nil {
 		t.Fatal("Failed to push data to redis with error: ", err)
 	}
 
-	err = c.FailJob(processorID)
+	err = c.FailJob(job.ID)
 	if err != nil {
 		t.Error("Expected nil error, got: ", err)
 	}
 
-	keys, err := redis.Strings(c.do("KEYS", fmtFailedKey(job.ID.String())))
+	keys, err := redis.Strings(c.do("KEYS", fmtFailedKey(job.ID)))
 	if err != nil {
 		t.Fatal("Failed to retrieve key with error: ", err)
 	}
@@ -372,12 +369,12 @@ func testStagedJobsSuccess(t *testing.T) {
 		t.Fatal("Failed to marshal job: ", err)
 	}
 
-	_, err = b.do("RPUSH", fmt.Sprintf("%s:%s", stagingQueue, uuid.Must(uuid.NewRandom()).String()), raw1)
+	_, err = b.do("RPUSH", fmtStagingKey(uuid.Must(uuid.NewRandom()).String()), raw1)
 	if err != nil {
 		t.Fatal("Failed to add job to redis: ", err)
 	}
 
-	_, err = b.do("RPUSH", fmt.Sprintf("%s:%s", stagingQueue, uuid.Must(uuid.NewRandom()).String()), raw2)
+	_, err = b.do("RPUSH", fmtStagingKey(uuid.Must(uuid.NewRandom()).String()), raw2)
 	if err != nil {
 		t.Fatal("Failed to add job to redis: ", err)
 	}
@@ -388,7 +385,7 @@ func testStagedJobsSuccess(t *testing.T) {
 	}
 
 	unexpectedResults := func() {
-		t.Errorf("Unexpected jobs returned. Expected: %v. got: %v", []wingman.InternalJob{initialJob1, initialJob2}, jobs)
+		t.Errorf("Unexpected jobs returned. Expected: %v. got: %v", []*wingman.InternalJob{initialJob1, initialJob2}, jobs)
 	}
 
 	if len(jobs) == 2 {
@@ -410,7 +407,7 @@ func testStagedJobsInvalidJobPayload(t *testing.T) {
 
 	val := "some value"
 	id := uuid.Must(uuid.NewRandom())
-	key := fmt.Sprintf("%s:%s", stagingQueue, id.String())
+	key := fmtStagingKey(id.String())
 
 	_, err := b.do("RPUSH", key, val)
 	if err != nil {
