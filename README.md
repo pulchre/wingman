@@ -12,7 +12,7 @@ Provided backends
 
 - Redis
 
-To create a new backend,  implement the [wingman.Backend interface](https://github.com/pulchre/wingman/blob/master/backend.go#L20).
+To create a new backend,  implement the [wingman.Backend interface](https://github.com/pulchre/wingman/blob/master/backend.go#L13).
 
 # Processors
 
@@ -21,7 +21,7 @@ Provided processors
 - Goroutine
 - Native Process (Linux, Unix only)
 
-To create a new processor, implement the [wingman.Processor interface](https://github.com/pulchre/wingman/blob/master/processor.go#L25).
+To create a new processor, implement the [wingman.Processor interface](https://github.com/pulchre/wingman/blob/master/processor.go#L7).
 
 # License
 
