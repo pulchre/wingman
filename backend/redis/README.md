@@ -48,5 +48,5 @@ event of a crash between popping the job off the queue and moving it to
 processing. Moreover, we use a new staging ID because if multiple mangers are
 watching a queue, we don't want it to be picked up more than once.
 
-The `BLMOVE` command is also block. We have a context that, if cancelled, will
+The `BLMOVE` command also blocks. We have a context that, if cancelled, will
 unblock the client. A timeout can also be set to occasionally unblock.
