@@ -30,3 +30,23 @@ The options available are:
   duration. If the value is zero, then the pool does not close connections
   based on age.
 
+## Internals
+
+Here is an overview of the stages that a job goes through in the Redis backend.
+1. `RPUSH` onto the queue.
+1. `BLMOVE` from the queue to staging which is a Redis key
+(wingman:staging:STAGING-ID) specific to the job.
+1. `LMOVE` from staging to processing which is also a Redis key
+(wingman:processing:JOB-ID) specific to the job.
+1. When the job finishes:
+	* Successfully: `DEL` the processing key.
+	* Failed: `LMOVE` the processing key to a failed Redis Key
+	(wingman:failed:JOB-ID).
+
+We use `BLMOVE` so we can ensure that we don't accidentally lose the in the
+event of a crash between popping the job off the queue and moving it to
+processing. Moreover, we use a new staging ID because if multiple mangers are
+watching a queue, we don't want it to be picked up more than once.
+
+The `BLMOVE` command is also block. We have a context that, if cancelled, will
+unblock the client. A timeout can also be set to occasionally unblock.
