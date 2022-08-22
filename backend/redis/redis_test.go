@@ -26,23 +26,19 @@ func init() {
 }
 
 func TestInit(t *testing.T) {
-	case1 := Options{
+	options := Options{
 		MaxIdle: 1,
 		Dial:    dialRedis,
 	}
 
-	got1, got2 := Init(case1)
-	if (got1 != nil && got1.(*Backend).Pool.MaxIdle != 1) || got2 != nil {
-		t.Errorf("Init(%v) == %v, `%v`, want %v, `%v`", case1, got1, got2, "redis Pool with MaxIdle 1", nil)
+	got1, got2 := Init(options)
+	if (got1 != nil && got1.Pool.MaxIdle != 1) || got2 != nil {
+		t.Errorf("Init(%v) == %v, `%v`, want %v, `%v`", options, got1, got2, "redis Pool with MaxIdle 1", nil)
 	}
 
-	case2 := "not a redis.Option"
-
-	got1, got2 = Init(case2)
-	if got1 != nil || got2 != WrongOptionsTypeError {
-		t.Errorf("Init(%v) == %v, `%v`, want %v, `%v`", case2, got1, got2, nil, WrongOptionsTypeError)
-	}
-
+	// Ensure that redis.Backend implements the `wingman.Backend`
+	// interface.
+	var _ wingman.Backend = got1
 }
 
 func TestPushJob(t *testing.T) {
@@ -551,7 +547,7 @@ func TestSize(t *testing.T) {
 }
 
 func testClient(t *testing.T) *Backend {
-	client, err := initBackend(Options{
+	client, err := Init(Options{
 		MaxIdle:         2,
 		MaxActive:       2,
 		Dial:            dialRedis,

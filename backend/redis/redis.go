@@ -48,17 +48,7 @@ type Options struct {
 	BlockingTimeout float32
 }
 
-func Init(options interface{}) (wingman.Backend, error) {
-	switch redisOptions := options.(type) {
-	case Options:
-		return initBackend(redisOptions)
-	default:
-		return nil, WrongOptionsTypeError
-	}
-
-}
-
-func initBackend(options Options) (*Backend, error) {
+func Init(options Options) (*Backend, error) {
 	var backend *Backend
 
 	backend = &Backend{&redis.Pool{
