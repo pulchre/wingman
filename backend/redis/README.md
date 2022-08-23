@@ -2,11 +2,18 @@
 
 This is the basic initialization of this backend:
 ```go
-backend, err := redis.Init(redis.Options{
-	Dial:            func() (r.Conn, error) { return r.Dial("tcp", "localhost:6379") },
-})
-if err != nil {
-	return err
+import (
+	r "github.com/gomodule/redigo/redis"
+	"github.com/pulchre/wingman/backend/redis"
+)
+
+func main() {
+	backend, err := redis.Init(redis.Options{
+		Dial:            func() (r.Conn, error) { return r.Dial("tcp", "localhost:6379") },
+	})
+	if err != nil {
+		return err
+	}
 }
 ```
 
