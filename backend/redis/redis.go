@@ -13,6 +13,7 @@ import (
 	"github.com/pulchre/wingman"
 )
 
+const successfulJobsCount = "wingman:successful_total"
 const stagingQueueFmt = "wingman:staging:%v"
 const processorFmt = "wingman:processing:%v"
 const failedFmt = "wingman:failed:%v"
@@ -287,6 +288,28 @@ func (b Backend) Size(queue string) int {
 	size, _ := redis.Int(client.conn.Do("LLEN", queue))
 
 	return int(size)
+}
+
+func (b Backend) SuccessfulJobs() int {
+	client, err := b.getClient()
+	if err != nil {
+		return 0
+	}
+	defer client.Close()
+
+	count, _ := redis.Int(client.conn.Do("GET", successfulJobsCount))
+
+	return count
+}
+
+func (b Backend) IncSuccessfulJobs() {
+	client, err := b.getClient()
+	if err != nil {
+		return
+	}
+	defer client.Close()
+
+	client.conn.Do("INCR", successfulJobsCount)
 }
 
 // Release any resources used

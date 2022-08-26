@@ -59,6 +59,12 @@ type Backend interface {
 	// Size returns the length of the queue.
 	Size(queue string) int
 
+	// SuccessfulJobs returns the number of jobs successfully processed.
+	SuccessfulJobs() int
+
+	// IncSuccessfulJobs increments the successful jobs count.
+	IncSuccessfulJobs()
+
 	// Close cleans up any resources that may be necessary for its
 	// operation.
 	Close() error

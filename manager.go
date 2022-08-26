@@ -261,6 +261,7 @@ func (s *Manager) waitForResults() {
 
 		if res.Error == nil {
 			s.backend.ClearJob(res.Job.ID)
+			s.backend.IncSuccessfulJobs()
 		} else {
 			s.failJob(res.Job)
 		}
