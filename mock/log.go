@@ -1,118 +1,122 @@
 package mock
 
 import (
-	"fmt"
-	"regexp"
+	"encoding/json"
 	"sync"
+	"time"
 
 	"github.com/pulchre/wingman"
+	"github.com/rs/zerolog"
 )
 
 var TestLog *TestLogger
 
 func init() {
-	TestLog = &TestLogger{
-		FatalVars: make([]string, 0),
-		PrintVars: make([]string, 0),
-	}
+	ResetLog()
+}
+
+func ResetLog() {
+	TestLog = &TestLogger{}
+	TestLog.Logger = zerolog.New(TestLog)
 	wingman.Log = TestLog
 }
 
 type TestLogger struct {
-	FatalVars []string
-	PrintVars []string
-	mu        sync.Mutex
+	zerolog.Logger
+	events []Event
+
+	mu sync.RWMutex
 }
 
-func (l *TestLogger) Fatal(v ...interface{}) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+type Event map[string]any
 
-	if l.FatalVars == nil {
-		l.FatalVars = make([]string, 0)
+func (l *TestLogger) Fatal() *zerolog.Event {
+	return l.Error()
+}
+
+func (l *TestLogger) Write(p []byte) (n int, err error) {
+	n = len(p)
+
+	var event Event
+	err = json.Unmarshal(p, &event)
+	if err != nil {
+		return
 	}
 
-	l.FatalVars = append(l.FatalVars, fmt.Sprint(v...))
-}
-
-func (l *TestLogger) Fatalf(format string, v ...interface{}) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if l.FatalVars == nil {
-		l.FatalVars = make([]string, 0)
-	}
+	l.events = append(l.events, event)
 
-	l.FatalVars = append(l.FatalVars, fmt.Sprintf(format, v...))
+	return
 }
 
-func (l *TestLogger) Print(v ...interface{}) {
+func (l *TestLogger) AddEvent(event Event) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if l.PrintVars == nil {
-		l.PrintVars = make([]string, 0)
-	}
-
-	l.PrintVars = append(l.PrintVars, fmt.Sprint(v...))
+	l.events = append(l.events, event)
 }
 
-func (l *TestLogger) Printf(format string, v ...interface{}) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+func (l *TestLogger) Count() int {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 
-	if l.PrintVars == nil {
-		l.PrintVars = make([]string, 0)
-	}
-
-	l.PrintVars = append(l.PrintVars, fmt.Sprintf(format, v...))
+	return len(l.events)
 }
 
-func (l *TestLogger) FatalReceived(v string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+func (l *TestLogger) EventAtIndex(i int) Event {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 
-	for _, msg := range l.FatalVars {
-		if v == msg {
-			return true
+	return l.events[i]
+}
+
+func (l *TestLogger) EventByMessage(msg string) (Event, bool) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	for _, e := range l.events {
+		if m, ok := e["message"]; ok && m == msg {
+			return e, true
 		}
 	}
 
-	return false
+	return Event{}, false
 }
 
-func (l *TestLogger) PrintReceived(v string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+func (e Event) HasField(key string) bool {
+	_, ok := e[key]
+	return ok
+}
 
-	for _, msg := range l.PrintVars {
-		if v == msg {
+func (e Event) HasErr(err error) bool {
+	return e["error"] == err.Error()
+}
+
+func (e Event) HasStr(key, value string) bool {
+	return e[key] == value
+}
+
+func (e Event) HasTime(key string, t time.Time, within time.Duration) bool {
+	str, ok := e[key]
+	if !ok {
+		return false
+	}
+
+	switch str.(type) {
+	case string:
+		v, err := time.Parse(time.RFC3339, str.(string))
+		if err != nil {
+			return false
+		}
+
+		if t.Add(within).After(v) && t.Add(-within).Before(v) {
 			return true
 		}
+	default:
+		return false
 	}
 
 	return false
-}
-
-func (l *TestLogger) PrintReceivedRegex(v string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	r := regexp.MustCompile(v)
-
-	for _, msg := range l.PrintVars {
-		if r.MatchString(msg) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func (l *TestLogger) Reset() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	l.FatalVars = make([]string, 0)
-	l.PrintVars = make([]string, 0)
 }

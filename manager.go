@@ -7,6 +7,8 @@ import (
 	"os/signal"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 const signalReceivedMsg = "Shutting down safely. Send signal again to shutdown immediately. Warning: data loss possible."
@@ -90,7 +92,7 @@ func (s *Manager) Start() error {
 	if err != nil {
 		s.cancel()
 		s.running = false
-		Log.Print("Failed to reenqueue staged jobs: ", err)
+		Log.Err(err).Msg("Failed to reenqueue staged jobs")
 		return err
 	}
 
@@ -125,7 +127,7 @@ func (s *Manager) Start() error {
 
 	<-s.processor.Done()
 
-	Log.Print("Wingman shutdown gracefully")
+	Log.Info().Msg("Wingman shutdown gracefully")
 
 	s.shutdownSignalHandler()
 	s.signalWg.Wait()
@@ -163,7 +165,7 @@ func (s *Manager) shutdownSignalHandler() {
 func (s *Manager) watchQueue(ctx context.Context, queue string) {
 	defer s.wg.Done()
 
-	Log.Printf("Watching queue=%v", queue)
+	Log.Info().Str("queue", queue).Msg("Watching queue")
 	for {
 		select {
 		case <-ctx.Done():
@@ -196,14 +198,14 @@ func (s *Manager) retrieveJob(ctx context.Context, queue string) <-chan *Interna
 
 	s.wg.Add(1)
 	go func() {
-		Log.Print("Retrieving job from queue=", queue)
+		Log.Info().Str("queue", queue).Msg("Retrieving job from queue")
 		defer close(jobChan)
 		defer s.wg.Done()
 
 		job, err := s.backend.PopAndStageJob(ctx, queue)
 		if err != nil {
 			if err != ErrCanceled {
-				Log.Print("Failed to retrieve next job: ", err)
+				Log.Err(err).Msg("Failed to retrieve next job")
 			}
 			return
 		}
@@ -224,18 +226,18 @@ func (s *Manager) handleJob(ctx context.Context, job *InternalJob) {
 
 	err := s.backend.ProcessJob(job.StagingID)
 	if err != nil {
-		Log.Printf("Failed to move job id=%v to processing on the backend err=%v", job.ID, err)
+		Log.Err(err).Str("job_id", job.ID).Msg("Failed to move job to processing on the backend")
 		return
 	}
 
 	job.StartTime = time.Now()
 	s.workingJobs[job.ID] = *job
 
-	Log.Printf("Handling job id=%v start=%v", job.ID, job.StartTime.Format(time.RFC3339))
+	Log.Info().Str("job_id", job.ID).Msg("Handling job")
 	err = s.processor.SendJob(job)
 	if err != nil {
 		s.failJob(job)
-		Log.Printf("Failed to send job id=%s to processor err=%v", job.ID, err)
+		Log.Err(err).Str("job_id", job.ID).Msg("Failed to send job to processor")
 		return
 	}
 }
@@ -250,14 +252,17 @@ func (s *Manager) waitForResults() {
 		delete(s.workingJobs, res.Job.ID)
 		s.mu.Unlock()
 
-		Log.Printf(
-			"Job finished id=%v start=%v end=%v duration=%v err=%v",
-			res.Job.ID,
-			res.Job.StartTime.Format(time.RFC3339),
-			res.Job.EndTime.Format(time.RFC3339),
-			res.Job.EndTime.Sub(res.Job.StartTime),
-			res.Error,
-		)
+		var event *zerolog.Event
+		if res.Error == nil {
+			event = Log.Info()
+		} else {
+			event = Log.Err(res.Error)
+		}
+		event.Str("job_id", res.Job.ID).
+			Str("start", res.Job.StartTime.Format(time.RFC3339Nano)).
+			Str("end", res.Job.EndTime.Format(time.RFC3339Nano)).
+			Str("duration", res.Job.EndTime.Sub(res.Job.StartTime).String()).
+			Msg("Job finished")
 
 		if res.Error == nil {
 			s.backend.ClearJob(res.Job.ID)
@@ -272,7 +277,7 @@ func (s *Manager) waitForResults() {
 func (s *Manager) failJob(job *InternalJob) {
 	err := s.backend.FailJob(job.ID)
 	if err != nil {
-		Log.Printf("Failed to move job jobid=%v status to failed with error: err=%v", job.ID, err)
+		Log.Err(err).Str("job_id", job.ID).Msg("Failed to move job status to failed with error")
 	}
 }
 
@@ -288,7 +293,7 @@ func (s *Manager) waitForSignal() {
 			if ok {
 				i++
 				if i == 1 {
-					Log.Print(signalReceivedMsg)
+					Log.Info().Msg(signalReceivedMsg)
 					go s.Stop()
 				} else if i > 1 {
 					s.processor.ForceClose()
@@ -302,7 +307,7 @@ func (s *Manager) waitForSignal() {
 	}
 
 	if i > 1 {
-		Log.Fatal(signalHardShutdownMsg)
+		Log.Fatal().Msg(signalHardShutdownMsg)
 	}
 }
 
@@ -315,7 +320,7 @@ func (s *Manager) reenqueueStagedJobs() error {
 	for _, j := range jobs {
 		err = s.backend.ReenqueueStagedJob(j.StagingID)
 		if err == ErrorJobNotStaged {
-			Log.Print("Failed to reenqueue staged job staging_id=%v", j.StagingID)
+			Log.Err(err).Str("staging_id", j.StagingID).Msg("Failed to reenqueue staged job")
 		} else if err != nil {
 			return err
 		}

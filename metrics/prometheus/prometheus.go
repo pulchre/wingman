@@ -114,5 +114,5 @@ func Serve(backend wingman.Backend, opts Options) {
 
 	http.Handle("/metrics", promhttp.Handler())
 
-	wingman.Log.Fatal(http.ListenAndServe(opts.ListeningString(), nil))
+	wingman.Log.Fatal().Err(http.ListenAndServe(opts.ListeningString(), nil))
 }

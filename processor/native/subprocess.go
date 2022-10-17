@@ -81,12 +81,16 @@ func (p *subprocess) start() error {
 	if err != nil {
 		return err
 	}
-	wingman.Log.Printf("Starting subprocess pid=%d", p.cmd.Process.Pid)
+	wingman.Log.Info().
+		Int("subprocess_pid", p.Pid()).
+		Msg("Starting subprocess")
 
 	p.wg.Add(1)
 	go func() {
 		p.cmd.Wait()
-		wingman.Log.Printf("Dead subprocess pid=%d", p.cmd.Process.Pid)
+		wingman.Log.Info().
+			Int("subprocess_pid", p.Pid()).
+			Msg("Dead subprocess")
 
 		if !p.cmd.ProcessState.Success() {
 			p.errChan <- errors.New("Processed exited with failure")
@@ -124,7 +128,10 @@ func (p *subprocess) sendJob(job *wingman.InternalJob) error {
 		},
 	}
 
-	wingman.Log.Printf("Sending job id=%s pid=%d", job.ID, p.cmd.Process.Pid)
+	wingman.Log.Info().
+		Str("job_id", job.ID).
+		Int("subprocess_pid", p.Pid()).
+		Msg("Sending job to subprocess")
 	err = p.serverStream.Send(msg)
 	if err != nil {
 		return err
@@ -134,7 +141,9 @@ func (p *subprocess) sendJob(job *wingman.InternalJob) error {
 }
 
 func (s *subprocess) handleStream(stream pb.Processor_InitializeServer) error {
-	wingman.Log.Printf("Subprocess connected pid=%v", s.cmd.Process.Pid)
+	wingman.Log.Info().
+		Int("subprocess_pid", s.Pid()).
+		Msg("Subprocess connected")
 
 	s.serverStreamMu.Lock()
 	s.serverStream = stream
@@ -152,7 +161,10 @@ func (s *subprocess) handleStream(stream pb.Processor_InitializeServer) error {
 		case pb.Type_RESULT:
 			parsedJob, err := deserializeJob(in.Job)
 			if err != nil {
-				wingman.Log.Printf("Error parsing job in response message: %v, %v", err, in.Job)
+				wingman.Log.Err(err).
+					Str("job", in.Job.String()).
+					Int("subprocess_pid", s.Pid()).
+					Msg("Error parsing job in response message")
 				continue
 			}
 
@@ -167,7 +179,9 @@ func (s *subprocess) handleStream(stream pb.Processor_InitializeServer) error {
 
 			s.server.finishJob(parsedJob, processErr)
 		default:
-			wingman.Log.Print(in.Type)
+			wingman.Log.Info().
+				Str("type", in.Type.String()).
+				Msg("Received unhandled message type")
 		}
 	}
 }

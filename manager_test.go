@@ -3,12 +3,10 @@ package wingman_test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"os/signal"
 	"runtime"
 	"runtime/pprof"
-	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -46,7 +44,7 @@ func TestStartAlreadyRunning(t *testing.T) {
 }
 
 func TestStartJobProcessSuccessfully(t *testing.T) {
-	mock.TestLog.Reset()
+	mock.ResetLog()
 
 	// This seems to help prevent circumstances where there
 	// are more goroutines at the start than the end.
@@ -107,15 +105,35 @@ func TestStartJobProcessSuccessfully(t *testing.T) {
 	s.Stop()
 	wg.Wait()
 
-	for _, v := range mock.TestLog.PrintVars {
-		if strings.Contains(v, "failed with error:") {
-			t.Errorf("Expected successful job to not log error")
+	e, ok := mock.TestLog.EventByMessage("Job finished")
+	if ok {
+		if !e.HasStr("job_id", backendToMockBackend(s).LastAddedID) {
+			t.Errorf("Expected log to have job_id %v, got %v", backendToMockBackend(s).LastAddedID, e["job_id"])
 		}
+
+		now := time.Now()
+		if !e.HasTime("start", now, 500*time.Millisecond) {
+			t.Errorf("Expected log to have start within 500 millisecond of %v, got %v", now.Format(time.RFC3339Nano), e["start"])
+		}
+
+		if !e.HasTime("end", now, 500*time.Millisecond) {
+			t.Errorf("Expected log to have start within 500 millisecond of %v, got %v", now.Format(time.RFC3339Nano), e["end"])
+		}
+
+		if !e.HasField("duration") {
+			t.Error("Expected log to have duration")
+		}
+
+		if _, ok = e["error"]; ok {
+			t.Errorf("Expected log to not have error, got %v", e["error"])
+		}
+	} else {
+		t.Error("Expected log")
 	}
 }
 
 func TestStartJobProcessError(t *testing.T) {
-	mock.TestLog.Reset()
+	mock.ResetLog()
 
 	handlerName := "handler"
 	mockJob := mock.NewJob()
@@ -149,18 +167,35 @@ func TestStartJobProcessError(t *testing.T) {
 	s.Stop()
 	wg.Wait()
 
-	if !mock.TestLog.PrintReceivedRegex(fmt.Sprintf("Job finished id=%v start=%v end=%v duration=%v err=%v",
-		backendToMockBackend(s).LastAddedID,
-		timestampExpr,
-		timestampExpr,
-		durationExpr,
-		jobErr)) {
-		t.Errorf("Expected log when job processing fails. Got: %v", mock.TestLog.PrintVars)
+	e, ok := mock.TestLog.EventByMessage("Job finished")
+	if ok {
+		if !e.HasStr("job_id", backendToMockBackend(s).LastAddedID) {
+			t.Errorf("Expected log to have job_id %v, got %v", backendToMockBackend(s).LastAddedID, e["job_id"])
+		}
+
+		now := time.Now()
+		if !e.HasTime("start", now, 500*time.Millisecond) {
+			t.Errorf("Expected log to have start within 500 millisecond of %v, got %v", now.Format(time.RFC3339Nano), e["start"])
+		}
+
+		if !e.HasTime("end", now, 500*time.Millisecond) {
+			t.Errorf("Expected log to have start within 500 millisecond of %v, got %v", now.Format(time.RFC3339Nano), e["end"])
+		}
+
+		if !e.HasField("duration") {
+			t.Error("Expected log to have duration")
+		}
+
+		if !e.HasErr(jobErr) {
+			t.Errorf("Expected log to have error %v, got %v", jobErr, e["error"])
+		}
+	} else {
+		t.Error("Expected log")
 	}
 }
 
 func TestStartJobProcessPanic(t *testing.T) {
-	mock.TestLog.Reset()
+	mock.ResetLog()
 
 	handlerName := "handler"
 	mockJob := mock.NewJob()
@@ -195,18 +230,32 @@ func TestStartJobProcessPanic(t *testing.T) {
 	s.Stop()
 	wg.Wait()
 
-	if !mock.TestLog.PrintReceivedRegex(fmt.Sprintf("Job finished id=%v start=%v end=%v duration=%v err=%v",
-		backendToMockBackend(s).LastAddedID,
-		timestampExpr,
-		timestampExpr,
-		durationExpr,
-		wingman.NewError(panicMsg))) {
-		t.Errorf("Expected log when job panics. Got: %v", mock.TestLog.PrintVars)
+	e, ok := mock.TestLog.EventByMessage("Job finished")
+	if ok {
+		if !e.HasStr("job_id", backendToMockBackend(s).LastAddedID) {
+			t.Errorf("Expected log to have job_id %v, got %v", backendToMockBackend(s).LastAddedID, e["job_id"])
+		}
+
+		now := time.Now()
+		if !e.HasTime("start", now, 500*time.Millisecond) {
+			t.Errorf("Expected log to have start within 500 millisecond of %v, got %v", now.Format(time.RFC3339Nano), e["start"])
+		}
+
+		if !e.HasTime("end", now, 500*time.Millisecond) {
+			t.Errorf("Expected log to have start within 500 millisecond of %v, got %v", now.Format(time.RFC3339Nano), e["end"])
+		}
+
+		if !e.HasField("duration") {
+			t.Error("Expected log to have duration")
+		}
+
+	} else {
+		t.Error("Expected log")
 	}
 }
 
 func TestStartNextJobFails(t *testing.T) {
-	mock.TestLog.Reset()
+	mock.ResetLog()
 
 	s := setup()
 	err := errors.New("Test error")
@@ -216,8 +265,13 @@ func TestStartNextJobFails(t *testing.T) {
 
 	s.Stop()
 
-	if !mock.TestLog.PrintReceived(fmt.Sprint("Failed to retrieve next job: ", err)) {
-		t.Errorf("Erroneously logged: `%v`", mock.TestLog.PrintVars)
+	e, ok := mock.TestLog.EventByMessage("Failed to retrieve next job")
+	if ok {
+		if !e.HasErr(err) {
+			t.Errorf("Expected log to have error %v, got %v", err, e["error"])
+		}
+	} else {
+		t.Error("Expected log")
 	}
 }
 
@@ -240,7 +294,7 @@ func TestStopAlreadyStopped(t *testing.T) {
 }
 
 func TestStopByOneSignal(t *testing.T) {
-	mock.TestLog.Reset()
+	mock.ResetLog()
 
 	s := setup()
 	wg := run(t, s, nil)
@@ -258,13 +312,14 @@ func TestStopByOneSignal(t *testing.T) {
 
 	wg.Wait()
 
-	if !mock.TestLog.PrintReceived(wingman.SignalReceivedMsg()) {
-		t.Errorf("Expected signal received message: %s", mock.TestLog.PrintVars)
+	_, ok := mock.TestLog.EventByMessage(wingman.SignalReceivedMsg())
+	if !ok {
+		t.Error("Expected log")
 	}
 }
 
 func TestStopByManySignals(t *testing.T) {
-	mock.TestLog.Reset()
+	mock.ResetLog()
 
 	s := setup()
 	wg := run(t, s, nil)
@@ -302,8 +357,10 @@ func TestStopByManySignals(t *testing.T) {
 	wg.Wait()
 
 	time.Sleep(10 * time.Millisecond)
-	if !mock.TestLog.FatalReceived(wingman.SignalHardShutdownMsg()) {
-		t.Errorf("Expected signal received message: %s", mock.TestLog.PrintVars)
+
+	_, ok := mock.TestLog.EventByMessage(wingman.SignalHardShutdownMsg())
+	if !ok {
+		t.Error("Expected log")
 	}
 
 	mock.CleanupHandlers()

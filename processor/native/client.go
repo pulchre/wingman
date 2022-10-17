@@ -50,7 +50,7 @@ func NewClient() (*Client, error) {
 }
 
 func (c *Client) Start() error {
-	wingman.Log.Printf("Client process connecting pid=%v", c.pid)
+	wingman.Log.Info().Msg("Client process connecting")
 
 	// TODO: Add timeout
 	conn, err := grpc.Dial(fmt.Sprintf("localhost:%d", c.port), grpc.WithInsecure())
@@ -97,7 +97,7 @@ func (c *Client) Start() error {
 			c.wg.Add(1)
 			go c.handleJob(ctx, in)
 		case pb.Type_SHUTDOWN:
-			wingman.Log.Printf("Subprocess pid=%v received shutdown message", c.pid)
+			wingman.Log.Info().Msg("Subprocess received shutdown message")
 
 			c.wg.Wait()
 			c.closeConnection()
@@ -113,7 +113,7 @@ func (c *Client) signalWatcher() {
 	defer c.signalWg.Done()
 
 	for sig := range c.signalChan {
-		wingman.Log.Printf(`Subprocessor pid=%v received signal="%v" ignoring`, c.pid, sig)
+		wingman.Log.Info().Str("signal", sig.String()).Msg(`Subprocessor received ignoring`)
 	}
 }
 
@@ -129,7 +129,7 @@ func (c *Client) closeConnection() {
 
 	err := c.clientStream.CloseSend()
 	if err != nil {
-		wingman.Log.Printf(`Error closing client send stream msg="%s"`, err)
+		wingman.Log.Err(err).Msg("Error closing client send stream")
 	}
 }
 
@@ -147,7 +147,7 @@ func (c *Client) handleJob(ctx context.Context, in *pb.Message) {
 
 	job.Job, err = wingman.DeserializeJob(job.TypeName, in.Job.Payload)
 	if err != nil {
-		wingman.Log.Printf("Failed to deserialize job jobid=%v", job.ID)
+		wingman.Log.Err(err).Str("job_id", job.ID).Msg("Failed to deserialize job")
 	}
 
 	defer func() {
@@ -167,8 +167,7 @@ func (c *Client) handleJob(ctx context.Context, in *pb.Message) {
 		c.clientStreamMu.Lock()
 		senderr := c.clientStream.SendMsg(result)
 		if senderr != nil {
-			wingman.Log.Print("Failed to send job result jobid=%v joberr=%v err=%v",
-				id, err, senderr)
+			wingman.Log.Err(senderr).Str("job_err", err.Error()).Str("job_id", id).Msg("Failed to send job result")
 		}
 		c.clientStreamMu.Unlock()
 	}()

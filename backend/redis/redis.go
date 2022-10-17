@@ -110,7 +110,7 @@ func (b Backend) PopAndStageJob(ctx context.Context, queue string) (*wingman.Int
 	go func() {
 		select {
 		case <-ctx.Done():
-			wingman.Log.Printf("Unblocking redis client redis_id=%v", client.clientID)
+			wingman.Log.Info().Int("redis_id", client.clientID).Msg("Unblocking redis client")
 			client.cncl.Do("CLIENT", "UNBLOCK", client.clientID)
 		case <-done:
 			// Ensure we don't leak this goroutine when the parent

@@ -69,7 +69,7 @@ func (s *Server) Close() {
 	for _, subproc := range s.subprocesses {
 		err = subproc.sendShutdown()
 		if err != nil {
-			wingman.Log.Print("Failed to send shutdown to subprocessor with error: ", err)
+			wingman.Log.Err(err).Msg("Failed to send shutdown to subprocessor with error")
 		}
 
 		s.wg.Add(1)
@@ -215,7 +215,7 @@ func (s *Server) startGRPCServer() error {
 		defer s.wg.Done()
 		err := s.server.Serve(lis)
 		if err != nil {
-			wingman.Log.Print("GRPC server returned an error err=%v", err)
+			wingman.Log.Err(err).Msg("GRPC server returned an error")
 		}
 	}()
 
