@@ -16,6 +16,8 @@ import (
 
 const ClientEnvironmentName = "WINGMAN_NATIVE_CLIENT"
 
+var ErrorSubprocessShutdownCalled = errors.New("Shutdown called on subprocessor")
+
 var bin, binErr = os.Executable()
 
 type subprocess struct {
@@ -30,6 +32,9 @@ type subprocess struct {
 
 	working   int
 	workingMu sync.Mutex
+
+	startupComplete bool
+	startupCond     sync.Cond
 
 	wg wingman.WaitGroup
 }
@@ -47,9 +52,10 @@ func init() {
 
 func newSubprocess(server *Server) *subprocess {
 	return &subprocess{
-		server:   server,
-		doneChan: make(chan struct{}),
-		errChan:  make(chan error, 1),
+		server:      server,
+		doneChan:    make(chan struct{}),
+		errChan:     make(chan error, 1),
+		startupCond: *sync.NewCond(&sync.Mutex{}),
 	}
 }
 
@@ -141,6 +147,12 @@ func (p *subprocess) sendJob(job *wingman.InternalJob) error {
 }
 
 func (s *subprocess) handleStream(stream pb.Processor_InitializeServer) error {
+	defer func() {
+		s.serverStreamMu.Lock()
+		s.serverStream = nil
+		s.serverStreamMu.Unlock()
+	}()
+
 	wingman.Log.Info().
 		Int("subprocess_pid", s.Pid()).
 		Msg("Subprocess connected")
@@ -148,6 +160,11 @@ func (s *subprocess) handleStream(stream pb.Processor_InitializeServer) error {
 	s.serverStreamMu.Lock()
 	s.serverStream = stream
 	s.serverStreamMu.Unlock()
+
+	s.startupCond.L.Lock()
+	s.startupComplete = true
+	s.startupCond.L.Unlock()
+	s.startupCond.Broadcast()
 
 	for {
 		in, err := s.serverStream.Recv()
@@ -186,15 +203,21 @@ func (s *subprocess) handleStream(stream pb.Processor_InitializeServer) error {
 	}
 }
 
-func (p *subprocess) sendShutdown() error {
-	p.serverStreamMu.Lock()
-	defer p.serverStreamMu.Unlock()
+func (s *subprocess) sendShutdown() error {
+	s.startupCond.L.Lock()
+	for !s.startupComplete {
+		s.startupCond.Wait()
+	}
+	s.startupCond.L.Unlock()
 
-	if p.serverStream == nil {
+	s.serverStreamMu.Lock()
+	defer s.serverStreamMu.Unlock()
+
+	if s.serverStream == nil {
 		return nil
 	}
 
-	return p.serverStream.Send(&pb.Message{
+	return s.serverStream.Send(&pb.Message{
 		Type: pb.Type_SHUTDOWN,
 	})
 }

@@ -131,7 +131,7 @@ func TestServerSendMessage(t *testing.T) {
 }
 
 func TestServerWait(t *testing.T) {
-	concurrency := 2
+	concurrency := 1
 	processes := 1
 
 	s, err := NewServer(DefaultOptions().SetConcurrency(concurrency).SetProcesses(processes))
@@ -152,18 +152,22 @@ func TestServerWait(t *testing.T) {
 	}
 
 	for _, j := range jobs {
-		j.Job.(*mock.Job).HandlerOverride = "10millisecondsleep"
-
 		count := s.Working()
 		if count > concurrency*processes {
 			t.Errorf("Working jobs should not exceed concurrency * processes = %d. %d", concurrency*processes, count)
 		}
 
 		s.Wait()
-		s.SendJob(j)
+		err := s.SendJob(j)
+		if err != nil {
+			t.Fatal("Got error sending job: ", err)
+		}
 	}
 
-	s.Close()
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		s.Close()
+	}()
 
 	responseCount := 0
 	for range s.Results() {

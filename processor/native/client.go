@@ -103,7 +103,6 @@ func (c *Client) Start() error {
 			c.closeConnection()
 			c.shutdownSignalWatcher()
 			c.signalWg.Wait()
-			return nil
 		default:
 		}
 	}
