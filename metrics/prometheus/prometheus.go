@@ -21,6 +21,13 @@ var (
 			Help: "Number of jobs successfully processed.",
 		},
 	)
+
+	failedJobs = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "failed_jobs_total",
+			Help: "Number of jobs which failed during processing.",
+		},
+	)
 )
 
 type Options struct {
@@ -57,6 +64,7 @@ func (o Options) ListeningString() string {
 
 func init() {
 	prometheus.MustRegister(successfulJobs)
+	prometheus.MustRegister(failedJobs)
 }
 
 func watch(ctx context.Context, backend wingman.Backend, opts Options) {
@@ -65,6 +73,7 @@ func watch(ctx context.Context, backend wingman.Backend, opts Options) {
 	defer ticker.Stop()
 
 	var successful int
+	var failed int
 
 	for {
 		select {
@@ -72,7 +81,12 @@ func watch(ctx context.Context, backend wingman.Backend, opts Options) {
 			sucessfulNew := backend.SuccessfulJobs()
 			delta := sucessfulNew - successful
 			successfulJobs.Add(float64(delta))
-			successful = successful + delta
+			successful += delta
+
+			failedNew := backend.FailedJobs()
+			delta = failedNew - failed
+			failedJobs.Add(float64(delta))
+			failed += delta
 		case <-ctx.Done():
 			return
 		}
