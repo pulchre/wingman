@@ -17,6 +17,6 @@ jobs:
       with:
         go-version: '^1.18'
     - run: go build -o processor/native/testcmdbin github.com/pulchre/wingman/processor/native/testcmd
-    - run: go test -cover -v github.com/pulchre/wingman/...
+    - run: go test -cover -v -timeout 30s github.com/pulchre/wingman/...
       env:
         WINGMAN_NATIVE_BIN: ./testcmdbin
