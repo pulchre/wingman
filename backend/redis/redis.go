@@ -14,6 +14,7 @@ import (
 )
 
 const successfulJobsCount = "wingman:successful_total"
+const failedJobsCount = "wingman:failed_total"
 const stagingQueueFmt = "wingman:staging:%v"
 const processorFmt = "wingman:processing:%v"
 const failedFmt = "wingman:failed:%v"
@@ -310,6 +311,28 @@ func (b Backend) IncSuccessfulJobs() {
 	defer client.Close()
 
 	client.conn.Do("INCR", successfulJobsCount)
+}
+
+func (b Backend) FailedJobs() int {
+	client, err := b.getClient()
+	if err != nil {
+		return 0
+	}
+	defer client.Close()
+
+	count, _ := redis.Int(client.conn.Do("GET", failedJobsCount))
+
+	return count
+}
+
+func (b Backend) IncFailedJobs() {
+	client, err := b.getClient()
+	if err != nil {
+		return
+	}
+	defer client.Close()
+
+	client.conn.Do("INCR", failedJobsCount)
 }
 
 // Release any resources used

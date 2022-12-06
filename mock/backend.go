@@ -23,6 +23,7 @@ type Backend struct {
 	notifier *sync.Cond
 
 	successfulCount int
+	failedCount     int
 }
 
 func NewBackend() *Backend {
@@ -192,6 +193,8 @@ func (b *Backend) Size(queue string) int { return len(b.queues[queue]) }
 
 func (b *Backend) SuccessfulJobs() int { return b.successfulCount }
 func (b *Backend) IncSuccessfulJobs()  { b.successfulCount++ }
+func (b *Backend) FailedJobs() int     { return b.failedCount }
+func (b *Backend) IncFailedJobs()      { b.failedCount++ }
 
 func (b *Backend) Close() error { return nil }
 

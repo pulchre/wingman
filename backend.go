@@ -65,6 +65,13 @@ type Backend interface {
 	// IncSuccessfulJobs increments the successful jobs count.
 	IncSuccessfulJobs()
 
+	// FailedJobs returns the number of jobs which failed during
+	// processing.
+	FailedJobs() int
+
+	// IncFailedJobs increments the failed jobs count.
+	IncFailedJobs()
+
 	// Close cleans up any resources that may be necessary for its
 	// operation.
 	Close() error

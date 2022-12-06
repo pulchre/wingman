@@ -269,6 +269,7 @@ func (s *Manager) waitForResults() {
 			s.backend.IncSuccessfulJobs()
 		} else {
 			s.failJob(res.Job)
+			s.backend.IncFailedJobs()
 		}
 	}
 
