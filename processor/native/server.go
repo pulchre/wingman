@@ -223,6 +223,9 @@ func (s *Server) startGRPCServer() error {
 }
 
 func (s *Server) startSubprocesses() error {
+	s.capacityCond.L.Lock()
+	defer s.capacityCond.L.Unlock()
+
 	for i := 0; i < s.opts.Processes; i++ {
 		subprocess := newSubprocess(s)
 		err := subprocess.start()
