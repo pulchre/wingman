@@ -16,6 +16,7 @@ import (
 const PortEnvironmentName = "WINGMAN_NATIVE_PORT"
 
 var ErrorNoAvailableSubprocessor = errors.New("No available subprocessor")
+var ErrorShuttingDown = errors.New("Server is shutting down")
 
 type Server struct {
 	pb.UnimplementedProcessorServer
@@ -28,9 +29,11 @@ type Server struct {
 
 	capacityCond  *sync.Cond
 	totalCapacity int
+	shuttingDown  bool
 	working       map[string]workingJob
 
-	subprocesses map[int]*subprocess
+	subprocesses    map[int]*subprocess
+	newSubprocesses map[int]*subprocess
 }
 
 type workingJob struct {
@@ -66,6 +69,9 @@ func (s *Server) Start() error {
 func (s *Server) Close() {
 	var err error
 
+	s.capacityCond.L.Lock()
+	s.shuttingDown = true
+
 	for _, subproc := range s.subprocesses {
 		err = subproc.sendShutdown()
 		if err != nil {
@@ -79,6 +85,7 @@ func (s *Server) Close() {
 			<-subproc.Done()
 		}(subproc)
 	}
+	s.capacityCond.L.Unlock()
 
 	s.server.GracefulStop()
 	s.wg.Wait()
@@ -160,21 +167,46 @@ func (s *Server) Initialize(stream pb.Processor_InitializeServer) error {
 	}
 
 	s.capacityCond.L.Lock()
-	proc, ok := s.subprocesses[int(in.PID)]
-	s.totalCapacity += s.opts.Concurrency
-	s.capacityCond.Signal()
-	s.capacityCond.L.Unlock()
+	proc, ok := s.newSubprocesses[int(in.PID)]
 
 	if ok {
-		err = proc.handleStream(stream)
+		proc.setStream(stream)
+		delete(s.newSubprocesses, proc.Pid())
+
+		if s.shuttingDown {
+			err := proc.cmd.Process.Kill()
+			if err != nil {
+				wingman.Log.Err(err).Send()
+			}
+
+			s.capacityCond.L.Unlock()
+			return nil
+		}
+
+		s.subprocesses[proc.Pid()] = proc
+		s.totalCapacity += s.opts.Concurrency
+
+		s.capacityCond.Signal()
+		s.capacityCond.L.Unlock()
+
+		err = proc.handleStream()
+		if err != nil {
+			wingman.Log.Err(err).Send()
+		}
 
 		s.capacityCond.L.Lock()
 		delete(s.subprocesses, int(in.PID))
 		s.totalCapacity -= s.opts.Concurrency
 		s.capacityCond.L.Unlock()
 
+		err2 := s.startSubprocess()
+		if err2 != nil && err2 != ErrorShuttingDown {
+			wingman.Log.Err(err2).Msg("Failed to start replacement subprocess")
+		}
+
 		return err
 	} else {
+		s.capacityCond.L.Unlock()
 		return fmt.Errorf("Process with pid=%v is unknown", in.PID)
 	}
 }
@@ -192,12 +224,13 @@ func newServer(opts ProcessorOptions) *Server {
 	}
 
 	return &Server{
-		opts:         opts,
-		capacityCond: sync.NewCond(&sync.Mutex{}),
-		resultsChan:  make(chan wingman.ResultMessage, 64),
-		doneChan:     make(chan struct{}),
-		subprocesses: make(map[int]*subprocess),
-		working:      make(map[string]workingJob),
+		opts:            opts,
+		capacityCond:    sync.NewCond(&sync.Mutex{}),
+		resultsChan:     make(chan wingman.ResultMessage, 64),
+		doneChan:        make(chan struct{}),
+		subprocesses:    make(map[int]*subprocess),
+		newSubprocesses: make(map[int]*subprocess),
+		working:         make(map[string]workingJob),
 	}
 }
 
@@ -223,18 +256,31 @@ func (s *Server) startGRPCServer() error {
 }
 
 func (s *Server) startSubprocesses() error {
-	s.capacityCond.L.Lock()
-	defer s.capacityCond.L.Unlock()
-
 	for i := 0; i < s.opts.Processes; i++ {
-		subprocess := newSubprocess(s)
-		err := subprocess.start()
+		err := s.startSubprocess()
 		if err != nil {
 			return err
 		}
-
-		s.subprocesses[subprocess.Pid()] = subprocess
 	}
+
+	return nil
+}
+
+func (s *Server) startSubprocess() error {
+	s.capacityCond.L.Lock()
+	defer s.capacityCond.L.Unlock()
+
+	if s.shuttingDown {
+		return ErrorShuttingDown
+	}
+
+	subprocess := newSubprocess(s)
+	err := subprocess.start()
+	if err != nil {
+		return err
+	}
+
+	s.newSubprocesses[subprocess.Pid()] = subprocess
 
 	return nil
 }

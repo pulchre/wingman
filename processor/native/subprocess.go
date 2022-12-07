@@ -146,7 +146,7 @@ func (p *subprocess) sendJob(job *wingman.InternalJob) error {
 	return nil
 }
 
-func (s *subprocess) handleStream(stream pb.Processor_InitializeServer) error {
+func (s *subprocess) handleStream() error {
 	defer func() {
 		s.serverStreamMu.Lock()
 		s.serverStream = nil
@@ -156,10 +156,6 @@ func (s *subprocess) handleStream(stream pb.Processor_InitializeServer) error {
 	wingman.Log.Info().
 		Int("subprocess_pid", s.Pid()).
 		Msg("Subprocess connected")
-
-	s.serverStreamMu.Lock()
-	s.serverStream = stream
-	s.serverStreamMu.Unlock()
 
 	s.startupCond.L.Lock()
 	s.startupComplete = true
@@ -220,6 +216,13 @@ func (s *subprocess) sendShutdown() error {
 	return s.serverStream.Send(&pb.Message{
 		Type: pb.Type_SHUTDOWN,
 	})
+}
+
+func (s *subprocess) setStream(stream pb.Processor_InitializeServer) {
+	s.serverStreamMu.Lock()
+	defer s.serverStreamMu.Unlock()
+
+	s.serverStream = stream
 }
 
 func (p *subprocess) Pid() int {
