@@ -16,9 +16,9 @@ herein at any time.
 * "Use" means importing, integrating, copying, or executing any of this
   software. This includes with any SaaS, system, or infrastructure of any user.
 
-* "On-prem use" means use within a software which is licensed or otherwise
-  given to other users for use within that other user's owned, leased, licensed
-  systems, or infrastructure.
+* "On-prem use" means use within software which is licensed or otherwise given
+  to other users for use within that other user's owned, leased, licensed
+  software, systems, or infrastructure.
 
 * "Distribute" means giving, transmitting, sending, or transferring, in any
   manner, whether physical or digital, in source or compiled form, any portion
@@ -29,8 +29,9 @@ herein at any time.
   or corporation.
 
 * "Use license" means written permission for use of this software from Pulchre,
-  LLC., whether purchased or otherwise granted. This includes a subscription
-  from https://pulchre.net. This does not include on-prem use.
+  LLC., whether purchased or otherwise granted, by the licensed user. This
+  includes a subscription from https://pulchre.net. This does not include
+  on-prem use.
 
 * "On-prem use license" means written permission for on-prem use of this
   software from Pulchre, LLC., whether purchased or otherwise granted.
@@ -47,36 +48,37 @@ herein at any time.
 1. Any permission or restriction granted herein may be removed by an exception
    or exceptions specified below.
 
-1. No commercial user shall use this software for any purpose.
+1. No user shall use this software for any purpose except in accordance with
+   the terms of the AGPL.
 
 1. No user shall sell, license, or otherwise distribute this software for
-   on-prem use.
+   on-prem use except in accordance with the terms of the AGPL.
 
-1. No user shall distribute any part or whole of this software.
-
-1. Any non-commercial user may use this software for any purpose.
+1. Any user that is exempt from the AGPL, shall not be permitted to resell,
+   license, or otherwise give either original or modifications of this software
+   except in accordance with the specific allowances of an on-prem use license,
+   or the terms of the AGPL.
 
 # Exceptions
 
-* If a user's gross revenue does not exceed two hundred and fifty thousand
-  United States Dollars ($250,000) or equivalent amount in any other currency,
-  he is exempt from restriction 3.
+* While a commercial user's gross revenue does not exceed two hundred and fifty
+  thousand United States Dollars ($250,000) or equivalent amount in any other
+  currency, he may be considered to be licensed with a use license.
 
-* If a user's gross revenue does not exceed one million United States Dollars
-  ($1,000,000) or equivalent amount in any other currency, he is exempt from
-  restriction 4.
+* If a commercial user's gross revenue does not exceed one million United
+  States Dollars ($1,000,000) or equivalent amount in any other currency,
+  he may be considered to be licensed with an on-prem use license.
 
 * If a use license is obtained from Pulchre, LLC., the user to whom the use
-  license has been granted shall be exempt from restriction 3. The use license
-  shall be valid for the duration specified at receipt of the use license.
+  license has been granted shall be exempt from the terms of the AGPL. The use
+  license shall be valid for the duration specified at receipt of the use
+  license.
 
 * If an on-prem use license is obtained from Pulchre, LLC., the user to whom
-  the on-prem use license has been granted shall be exempt from restriction 3
-  and 4. Any other user to whom the on-prem licensed user licenses, sells,
-  leases or otherwise gives, shall be exempt from restriction 3. The use
-  license shall be valid for the duration specified at receipt of the on-prem
-  use license. The number of sub licenses given shall be specified at the
-  receipt of the on prem use license.
-
-* No user who has obtained a use license, an on-prem license, or a user
-  licensed by an on-prem licensee shall be bound by the terms of the AGPL.
+  the on-prem use license has been granted shall be exempt from the terms of
+  the AGPL. Any other user to whom the on-prem licensed user licenses, sells,
+  leases or otherwise gives, shall be considered to be licensed with a use
+  license. The on-prem license and sub use license shall be valid for the
+  duration specified at receipt of the on-prem use license. The number of sub
+  use licenses given shall be specified at the receipt of the on-prem use
+  license.
