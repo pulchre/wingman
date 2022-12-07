@@ -14,17 +14,27 @@ import (
 
 var wg sync.WaitGroup
 
+const (
+	successfulJobsTotal = "successful_jobs_total"
+	failedJobTotal      = "failed_jobs_total"
+)
+
+var collectors = []prometheus.Collector{
+	successfulJobs,
+	failedJobs,
+}
+
 var (
 	successfulJobs = prometheus.NewCounter(
 		prometheus.CounterOpts{
-			Name: "successful_jobs_total",
+			Name: successfulJobsTotal,
 			Help: "Number of jobs successfully processed.",
 		},
 	)
 
 	failedJobs = prometheus.NewCounter(
 		prometheus.CounterOpts{
-			Name: "failed_jobs_total",
+			Name: failedJobTotal,
 			Help: "Number of jobs which failed during processing.",
 		},
 	)
@@ -63,8 +73,10 @@ func (o Options) ListeningString() string {
 }
 
 func init() {
-	prometheus.MustRegister(successfulJobs)
-	prometheus.MustRegister(failedJobs)
+
+	for _, c := range collectors {
+		prometheus.MustRegister(c)
+	}
 }
 
 func watch(ctx context.Context, backend wingman.Backend, opts Options) {
@@ -72,21 +84,22 @@ func watch(ctx context.Context, backend wingman.Backend, opts Options) {
 	ticker := time.NewTicker(time.Duration(opts.UpdateFrequency))
 	defer ticker.Stop()
 
-	var successful int
-	var failed int
+	lastCounter := map[string]int{
+		successfulJobsTotal: 0,
+		failedJobTotal:      0,
+	}
 
 	for {
+		sucessfulNew := backend.SuccessfulJobs()
+		successfulJobs.Add(float64(sucessfulNew - lastCounter[successfulJobsTotal]))
+		lastCounter[successfulJobsTotal] = sucessfulNew
+
+		failedNew := backend.FailedJobs()
+		failedJobs.Add(float64(failedNew - lastCounter[failedJobTotal]))
+		lastCounter[failedJobTotal] = failedNew
+
 		select {
 		case <-ticker.C:
-			sucessfulNew := backend.SuccessfulJobs()
-			delta := sucessfulNew - successful
-			successfulJobs.Add(float64(delta))
-			successful += delta
-
-			failedNew := backend.FailedJobs()
-			delta = failedNew - failed
-			failedJobs.Add(float64(delta))
-			failed += delta
 		case <-ctx.Done():
 			return
 		}
