@@ -9,17 +9,18 @@ import (
 )
 
 func main() {
+	test := os.Getenv("WINGMAN_TEST")
 	if os.Getenv(native.ClientEnvironmentName) != "1" {
-		panic(fmt.Sprintf("%s=1 is not present in the environment", native.ClientEnvironmentName))
+		panic(fmt.Sprintf("test=%s %s=1 is not present in the environment", test, native.ClientEnvironmentName))
 	}
 
 	c, err := native.NewClient()
 	if err != nil {
-		panic(err)
+		panic(fmt.Sprintf("test=%s err=%v", test, err))
 	}
 
 	err = c.Start()
 	if err != nil {
-		panic(err)
+		panic(fmt.Sprintf("test=%s err=%v", test, err))
 	}
 }

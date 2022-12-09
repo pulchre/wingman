@@ -83,6 +83,11 @@ func (s *Server) Close() {
 			defer s.wg.Done()
 
 			<-subproc.Done()
+
+			s.capacityCond.L.Lock()
+			defer s.capacityCond.L.Unlock()
+
+			delete(s.subprocesses, subproc.Pid())
 		}(subproc)
 	}
 	s.capacityCond.L.Unlock()
@@ -94,7 +99,18 @@ func (s *Server) Close() {
 }
 
 func (s *Server) ForceClose() {
+	s.capacityCond.L.Lock()
+	defer s.capacityCond.L.Unlock()
+
 	s.server.Stop()
+
+	for _, subproc := range s.subprocesses {
+		err := subproc.cmd.Process.Kill()
+		if err != nil {
+			wingman.Log.Err(err).Msg("Failed to kill subprocess on ForceClose")
+		}
+	}
+
 	s.wg.Clear()
 }
 

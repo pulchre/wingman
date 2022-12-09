@@ -1,6 +1,7 @@
 package native
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -60,6 +61,8 @@ func TestNewServer(t *testing.T) {
 }
 
 func TestServerStart(t *testing.T) {
+	os.Setenv("WINGMAN_TEST", "TestServerStart")
+
 	table := []struct {
 		in  ProcessorOptions
 		err bool
@@ -95,12 +98,15 @@ func TestServerStart(t *testing.T) {
 			continue
 		}
 
+		time.Sleep(10 * time.Millisecond)
 		s.Close()
 		<-s.Done()
 	}
 }
 
 func TestServerSendMessage(t *testing.T) {
+	os.Setenv("WINGMAN_TEST", "TestServerSendMessage")
+
 	s, err := NewServer(DefaultOptions())
 	if err != nil {
 		t.Fatal("Expected nil error, got: ", err)
@@ -131,6 +137,8 @@ func TestServerSendMessage(t *testing.T) {
 }
 
 func TestServerWait(t *testing.T) {
+	os.Setenv("WINGMAN_TEST", "TestServerWait")
+
 	concurrency := 1
 	processes := 1
 
