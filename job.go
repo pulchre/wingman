@@ -16,7 +16,7 @@ import (
 // type.
 type ContextKey string
 
-// ContextProcessorIDKey is the key under which the processor ID is stored.
+// ContextJobIDKey is the key under which the processor ID is stored.
 const ContextJobIDKey = ContextKey("jobID")
 
 var ErrorJobNotStaged = errors.New("Could not find staged job")
