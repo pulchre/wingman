@@ -1,4 +1,4 @@
-Copyright (c) 2021 Pulchre, LLC.
+Copyright (c) 2021-2023 Pulchre, LLC.
 
 # Terms and Conditions
 
@@ -28,6 +28,10 @@ herein at any time.
   indirect; this includes any for-profit partnership, limited liability company,
   or corporation.
 
+* "Commercial user" means any user who receives at least two hundred and fifty
+  thousand United States Dollars ($250,000), or equivalent amounts in any other
+  currency, in gross revenue in a calendar year.
+
 * "Use license" means written permission for use of this software from Pulchre,
   LLC., whether purchased or otherwise granted, by the licensed user. This
   includes a subscription from https://pulchre.net. This does not include
@@ -51,8 +55,7 @@ herein at any time.
 1. No user shall use this software for any purpose except in accordance with
    the terms of the AGPL.
 
-1. No user shall sell, license, or otherwise distribute this software for
-   on-prem use except in accordance with the terms of the AGPL.
+1. No commercial user shall use this software for any purpose.
 
 1. Any user that is exempt from the AGPL, shall not be permitted to resell,
    license, or otherwise give either original or modifications of this software
@@ -61,13 +64,17 @@ herein at any time.
 
 # Exceptions
 
-* While a commercial user's gross revenue does not exceed two hundred and fifty
-  thousand United States Dollars ($250,000) or equivalent amount in any other
-  currency, he may be considered to be licensed with a use license.
+* A user with a commercial interest with gross revenue that does not exceed two
+  hundred and fifty thousand United States Dollars ($250,000) or equivalent
+  amount in any other currency, shall be considered to be licensed with a use
+  license.
 
-* If a commercial user's gross revenue does not exceed one million United
-  States Dollars ($1,000,000) or equivalent amount in any other currency,
-  he may be considered to be licensed with an on-prem use license.
+* A user with a commercial interest with gross revenue that does not exceed one
+  million United States Dollars ($1,000,000) or equivalent amount in any other
+  currency, shall be considered to be licensed with an on-prem use license.
+
+* A commercial user may use this software after obtaining either a use license
+  or on-prem use licence.
 
 * If a use license is obtained from Pulchre, LLC., the user to whom the use
   license has been granted shall be exempt from the terms of the AGPL. The use
