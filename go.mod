@@ -1,6 +1,6 @@
 module github.com/pulchre/wingman
 
-go 1.18
+go 1.20
 
 require (
 	github.com/gomodule/redigo v1.8.9
