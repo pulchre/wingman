@@ -132,6 +132,99 @@ func TestStartJobProcessSuccessfully(t *testing.T) {
 	}
 }
 
+func TestStartLockJob(t *testing.T) {
+	mock.ResetLog()
+
+	goroutines := runtime.NumGoroutine()
+	defer func() {
+		if err := recover(); err != nil {
+			panic(err)
+		}
+
+		// This seems to help prevent circumstances
+		// where there are more goroutines at the end
+		// than the start.
+		time.Sleep(10 * time.Millisecond)
+		now := runtime.NumGoroutine()
+
+		if goroutines != now {
+			pprof.Lookup("goroutine").WriteTo(os.Stdout, 1)
+			t.Fatalf("Started with %d goroutines. Ended with: %d", goroutines, now)
+		}
+	}()
+
+	handlerName := "handler"
+	mockJob1 := mock.NewJob()
+	mockJob1.HandlerOverride = handlerName
+	mockJob1.LockKeyOverride = "lock"
+	mockJob1.ConcurrencyOverride = 1
+
+	handler2Name := "handler2"
+	mockJob2 := mock.NewJob()
+	mockJob2.HandlerOverride = handler2Name
+	mockJob2.LockKeyOverride = "lock"
+	mockJob2.ConcurrencyOverride = 1
+	var processed bool
+
+	var wg1 sync.WaitGroup
+	wg1.Add(1)
+	busy1 := make(chan struct{})
+	mock.RegisterHandler(handlerName, func(ctx context.Context, job wingman.Job) error {
+		defer wg1.Done()
+
+		j := job.(*mock.Job)
+
+		if j != mockJob1 {
+			t.Errorf("Wrong job passed to handler. Got: %v, Expected: %v", j, mockJob1)
+		}
+
+		<-busy1
+		return nil
+	})
+
+	var wg2 sync.WaitGroup
+	wg2.Add(1)
+	busy2 := make(chan struct{})
+	mock.RegisterHandler(handler2Name, func(ctx context.Context, job wingman.Job) error {
+		defer wg2.Done()
+
+		j := job.(*mock.Job)
+
+		if j != mockJob2 {
+			t.Errorf("Wrong job passed to handler. Got: %v, Expected: %v", j, mockJob1)
+		}
+
+		processed = true
+		<-busy2
+		return nil
+	})
+
+	s := setupWithConcurrency(2)
+	wg := run(t, s, nil)
+	wingman.ManagerBackend(s).PushJob(mockJob1)
+	wingman.ManagerBackend(s).PushJob(mockJob2)
+
+	time.Sleep(10 * time.Millisecond)
+
+	close(busy1)
+
+	if processed {
+		t.Errorf("Expected job to be held")
+	}
+
+	wg1.Wait()
+
+	close(busy2)
+	wg2.Wait()
+	if !processed {
+		t.Errorf("Expected job to be processed")
+	}
+
+	mock.CleanupHandlers()
+	s.Stop()
+	wg.Wait()
+}
+
 func TestStartJobProcessError(t *testing.T) {
 	mock.ResetLog()
 
@@ -386,6 +479,10 @@ func run(t *testing.T, s *wingman.Manager, expectedErr error) *sync.WaitGroup {
 }
 
 func setup() *wingman.Manager {
+	return setupWithConcurrency(1)
+}
+
+func setupWithConcurrency(concurrency int) *wingman.Manager {
 	backend := mock.NewBackend()
 	mgr, err := wingman.NewManager(
 		wingman.ManagerOptions{
@@ -393,7 +490,7 @@ func setup() *wingman.Manager {
 			Queues:  []string{"*"},
 			Signals: []os.Signal{syscall.SIGUSR2},
 			ProcessorOptions: goroutine.ProcessorOptions{
-				Concurrency: 1,
+				Concurrency: concurrency,
 			},
 		},
 	)

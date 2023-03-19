@@ -138,6 +138,14 @@ func (b Backend) PopAndStageJob(ctx context.Context, queue string) (*wingman.Int
 	return job, nil
 }
 
+func (b Backend) LockJob(ctx context.Context, job wingman.InternalJob) (bool, error) {
+	return true, nil
+}
+
+func (b Backend) ReleaseJob(ctx context.Context, job wingman.InternalJob) error {
+	return nil
+}
+
 func (b Backend) ProcessJob(stagingID string) error {
 	client, err := b.getClient()
 	if err != nil {

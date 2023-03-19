@@ -30,6 +30,8 @@ type Job interface {
 	TypeName() string
 	Handle(context.Context) error
 	Queue() string
+	LockKey() string
+	Concurrency() int
 }
 
 // JobTypeBuilder is a function that this libraries consumer must set to

@@ -179,10 +179,38 @@ func (s *Manager) watchQueue(ctx context.Context, queue string) {
 				continue
 			}
 
+			locked, err := s.backend.LockJob(ctx, *job)
+			if err != nil {
+				Log.
+					Err(err).
+					Str("job_id", job.ID).
+					Str("lock_key", job.Job.LockKey()).
+					Msg("Unable to obtain lock")
+			}
+
+			event := Log.
+				Info().
+				Str("job_id", job.ID).
+				Str("lock_key", job.Job.LockKey())
+
+			if locked {
+				event.Msg("Lock obtained")
+			} else {
+				event.Msg("Job held")
+				continue
+			}
+
 			ok = s.processor.Wait()
 
 			if !ok {
-				s.backend.ReenqueueStagedJob(job.StagingID)
+				err := s.backend.ReenqueueStagedJob(job.StagingID)
+				if err != nil {
+					Log.
+						Err(err).
+						Str("staging_id", job.StagingID).
+						Str("job_id", job.ID).
+						Msg("Failed to reenqueue staged job")
+				}
 				continue
 			}
 
@@ -270,6 +298,22 @@ func (s *Manager) waitForResults() {
 		} else {
 			s.failJob(res.Job)
 			s.backend.IncFailedJobs()
+		}
+
+		err := s.backend.ReleaseJob(context.Background(), *res.Job)
+		if err == nil {
+			Log.
+				Info().
+				Str("job_id", res.Job.ID).
+				Str("lock_key", res.Job.Job.LockKey()).
+				Msg("Released lock")
+		} else {
+			Log.
+				Panic().
+				Err(err).
+				Str("job_id", res.Job.ID).
+				Str("lock_key", res.Job.Job.LockKey()).
+				Msg("Failed to unlock job")
 		}
 	}
 

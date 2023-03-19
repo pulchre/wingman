@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 
 	"github.com/pulchre/wingman"
 )
@@ -14,10 +15,13 @@ type Backend struct {
 	LastAddedID        string
 	NextJobCanceledErr error
 
-	queues  map[string][]*wingman.InternalJob
-	staging map[string]*wingman.InternalJob
-	working map[string]*wingman.InternalJob
-	failed  map[string]*wingman.InternalJob
+	queues  map[string][]wingman.InternalJob
+	staging map[string]wingman.InternalJob
+	working map[string]wingman.InternalJob
+	failed  map[string]wingman.InternalJob
+	locks   map[string]*atomic.Int64
+	held    map[string][]wingman.InternalJob
+	heldMu  sync.Mutex
 
 	stopping bool
 	notifier *sync.Cond
@@ -29,10 +33,12 @@ type Backend struct {
 func NewBackend() *Backend {
 	return &Backend{
 		NextJobCanceledErr: wingman.ErrCanceled,
-		queues:             make(map[string][]*wingman.InternalJob),
-		staging:            make(map[string]*wingman.InternalJob),
-		working:            make(map[string]*wingman.InternalJob),
-		failed:             make(map[string]*wingman.InternalJob),
+		queues:             make(map[string][]wingman.InternalJob),
+		staging:            make(map[string]wingman.InternalJob),
+		working:            make(map[string]wingman.InternalJob),
+		failed:             make(map[string]wingman.InternalJob),
+		locks:              make(map[string]*atomic.Int64),
+		held:               make(map[string][]wingman.InternalJob),
 		notifier:           sync.NewCond(&sync.Mutex{}),
 	}
 }
@@ -50,11 +56,7 @@ func (b *Backend) PushJob(job wingman.Job) error {
 	b.notifier.L.Lock()
 	defer b.notifier.L.Unlock()
 
-	if b.queues[job.Queue()] == nil {
-		b.queues[job.Queue()] = make([]*wingman.InternalJob, 0)
-	}
-
-	b.queues[job.Queue()] = append(b.queues[job.Queue()], intJob)
+	b.queues[job.Queue()] = append(b.queues[job.Queue()], *intJob)
 
 	b.notifier.Broadcast()
 
@@ -65,8 +67,10 @@ func (b *Backend) PushJob(job wingman.Job) error {
 // PopAndStageJob assumes that only one goroutine is waiting on the notifier
 func (b *Backend) PopAndStageJob(ctx context.Context, queue string) (*wingman.InternalJob, error) {
 	b.notifier.L.Lock()
+	defer b.notifier.L.Unlock()
 
-	stop := make(chan struct{}, 1)
+	var canceled bool
+	stop := make(chan struct{})
 	defer close(stop)
 	go func() {
 		select {
@@ -77,12 +81,11 @@ func (b *Backend) PopAndStageJob(ctx context.Context, queue string) (*wingman.In
 		b.notifier.L.Lock()
 		defer b.notifier.L.Unlock()
 
-		b.stopping = true
+		canceled = true
 		b.notifier.Broadcast()
 	}()
-	defer b.notifier.L.Unlock()
 
-	for !b.stopping {
+	for !canceled {
 		queue = b.resolveSplatQueue(queue)
 
 		if len(b.queues[queue]) > 0 {
@@ -91,13 +94,66 @@ func (b *Backend) PopAndStageJob(ctx context.Context, queue string) (*wingman.In
 			b.staging[job.StagingID] = job
 			b.queues[queue] = b.queues[queue][1:]
 
-			return job, nil
+			return &job, nil
 		}
 
 		b.notifier.Wait()
 	}
 
 	return nil, b.NextJobCanceledErr
+}
+
+func (b *Backend) LockJob(ctx context.Context, job wingman.InternalJob) (bool, error) {
+	lockKey := job.Job.LockKey()
+	concurrency := job.Job.Concurrency()
+
+	if lockKey == "" || concurrency < 1 {
+		return true, nil
+	}
+
+	if _, ok := b.locks[lockKey]; !ok {
+		b.locks[lockKey] = &atomic.Int64{}
+	}
+
+	locks := b.locks[lockKey].Add(1)
+	if locks > int64(concurrency) {
+		b.locks[lockKey].Add(-1)
+		b.heldMu.Lock()
+		defer b.heldMu.Unlock()
+
+		b.held[lockKey] = append(b.held[lockKey], job)
+		return false, nil
+	}
+
+	return true, nil
+}
+
+func (b *Backend) ReleaseJob(ctx context.Context, job wingman.InternalJob) error {
+	lockKey := job.Job.LockKey()
+
+	if _, ok := b.locks[lockKey]; !ok {
+		b.locks[lockKey] = &atomic.Int64{}
+		return nil
+	}
+
+	b.locks[lockKey].Add(-1)
+
+	b.heldMu.Lock()
+	defer b.heldMu.Unlock()
+	b.notifier.L.Lock()
+	defer b.notifier.L.Unlock()
+
+	if len(b.held[lockKey]) == 0 {
+		return nil
+	}
+
+	job = b.held[lockKey][0]
+	b.held[lockKey] = b.held[lockKey][1:]
+	b.queues[job.Queue()] = append([]wingman.InternalJob{job}, b.queues[job.Queue()]...)
+
+	b.notifier.Broadcast()
+
+	return nil
 }
 
 func (b *Backend) ProcessJob(stagingID string) error {
@@ -114,6 +170,7 @@ func (b *Backend) ProcessJob(stagingID string) error {
 
 	return nil
 }
+
 func (b *Backend) ClearJob(jobID string) error {
 	b.notifier.L.Lock()
 	defer b.notifier.L.Unlock()
@@ -161,7 +218,7 @@ func (b *Backend) StagedJobs() ([]*wingman.InternalJob, error) {
 
 	var i int
 	for _, v := range b.staging {
-		jobs[i] = v
+		jobs[i] = &v
 		i++
 	}
 
@@ -183,7 +240,7 @@ func (b *Backend) Peek(queue string) (*wingman.InternalJob, error) {
 
 	queue = b.resolveSplatQueue(queue)
 	if len(b.queues[queue]) > 0 {
-		return b.queues[queue][0], nil
+		return &b.queues[queue][0], nil
 	}
 
 	return nil, nil

@@ -8,6 +8,7 @@ import (
 )
 
 type Logger interface {
+	Panic() *zerolog.Event
 	Err(error) *zerolog.Event
 	Fatal() *zerolog.Event
 	Info() *zerolog.Event

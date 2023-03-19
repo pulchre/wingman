@@ -16,10 +16,12 @@ type HandlerSig func(context.Context, wingman.Job) error
 var handlers = make(map[string]HandlerSig)
 
 type Job struct {
-	Data            string
-	HandlerOverride string
-	QueueOverride   string
-	Processed       bool
+	Data                string
+	HandlerOverride     string
+	QueueOverride       string
+	LockKeyOverride     string
+	ConcurrencyOverride int
+	Processed           bool
 }
 
 func init() {
@@ -82,3 +84,6 @@ func (j Job) Queue() string {
 		return j.QueueOverride
 	}
 }
+
+func (j Job) LockKey() string  { return j.LockKeyOverride }
+func (j Job) Concurrency() int { return j.ConcurrencyOverride }
