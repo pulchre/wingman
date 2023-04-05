@@ -179,7 +179,7 @@ func (s *Manager) watchQueue(ctx context.Context, queue string) {
 				continue
 			}
 
-			locked, err := s.backend.LockJob(ctx, *job)
+			locked, err := s.backend.LockJob(*job)
 			if err != nil {
 				Log.
 					Err(err).
@@ -300,7 +300,7 @@ func (s *Manager) waitForResults() {
 			s.backend.IncFailedJobs()
 		}
 
-		err := s.backend.ReleaseJob(context.Background(), *res.Job)
+		err := s.backend.ReleaseJob(*res.Job)
 		if err == nil {
 			Log.
 				Info().

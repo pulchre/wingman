@@ -103,7 +103,7 @@ func (b *Backend) PopAndStageJob(ctx context.Context, queue string) (*wingman.In
 	return nil, b.NextJobCanceledErr
 }
 
-func (b *Backend) LockJob(ctx context.Context, job wingman.InternalJob) (bool, error) {
+func (b *Backend) LockJob(job wingman.InternalJob) (bool, error) {
 	lockKey := job.Job.LockKey()
 	concurrency := job.Job.Concurrency()
 
@@ -128,7 +128,7 @@ func (b *Backend) LockJob(ctx context.Context, job wingman.InternalJob) (bool, e
 	return true, nil
 }
 
-func (b *Backend) ReleaseJob(ctx context.Context, job wingman.InternalJob) error {
+func (b *Backend) ReleaseJob(job wingman.InternalJob) error {
 	lockKey := job.Job.LockKey()
 
 	if _, ok := b.locks[lockKey]; !ok {
