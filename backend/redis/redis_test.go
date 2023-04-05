@@ -160,6 +160,103 @@ func testPopAndStageJobContextDone(t *testing.T) {
 	}
 }
 
+func TestLockJob(t *testing.T) {
+	t.Run("Lock", testLockJobLock)
+	t.Run("Hold", testLockJobHold)
+}
+
+func testLockJobLock(t *testing.T) {
+	b := testClient(t)
+	defer b.Close()
+
+	job1 := newStagedJob(b)
+	job1.Job.(*mock.Job).LockKeyOverride = "lock"
+	job1.Job.(*mock.Job).ConcurrencyOverride = 1
+
+	ok, err := b.LockJob(job1)
+	if err != nil {
+		t.Fatal("LockJob expected nil error got: ", err)
+	}
+
+	if !ok {
+		t.Error("Unable to lock job")
+	}
+
+	exists, err := redis.Bool(b.do("EXISTS", fmtLockKey(job1.Job.LockKey(), job1.ID)))
+	if err != nil {
+		t.Fatal("Unable to check if lock key exists ", err)
+	}
+
+	if !exists {
+		t.Error("Failed to lock job")
+	}
+
+	job2 := newStagedJob(b)
+	ok, err = b.LockJob(job2)
+	if err != nil {
+		t.Fatal("LockJob expected nil error got: ", err)
+	}
+
+	if !ok {
+		t.Error("Unable to lock job")
+	}
+
+}
+
+func testLockJobHold(t *testing.T) {
+	b := testClient(t)
+	defer b.Close()
+
+	job1 := newStagedJob(b)
+	job1.Job.(*mock.Job).LockKeyOverride = "lock"
+	job1.Job.(*mock.Job).ConcurrencyOverride = 1
+
+	ok, err := b.LockJob(job1)
+	if err != nil {
+		t.Fatal("LockJob expected nil error got: ", err)
+	}
+
+	if !ok {
+		t.Error("Unable to lock job")
+	}
+
+	job2 := newStagedJob(b)
+	job2.Job.(*mock.Job).LockKeyOverride = "lock"
+	job2.Job.(*mock.Job).ConcurrencyOverride = 1
+
+	ok, err = b.LockJob(job2)
+	if err != nil {
+		t.Fatal("LockJob expected nil error got: ", err)
+	}
+
+	if ok {
+		t.Error("Expected job to be held")
+	}
+
+	exists, err := redis.Bool(b.do("EXISTS", fmtLockKey(job2.Job.LockKey(), job2.ID)))
+	if err != nil {
+		t.Fatal("Unable to check if lock key exists ", err)
+	}
+
+	if exists {
+		t.Error("Should not have locked job")
+	}
+
+	err = b.ReleaseJob(job1)
+	if err != nil {
+		t.Fatal("ReleaseJob expected nil error got: ", err)
+	}
+
+	length, err := redis.Int(b.do("LLEN", job2.Queue()))
+	if err != nil {
+		panic(err)
+	}
+
+	if length != 1 {
+		t.Error("Expected held job to be moved back to the queue")
+	}
+}
+
 func TestProcessJob(t *testing.T) {
 	t.Run("Success", testProcessJobSuccess)
 	t.Run("NoJob", testProcessJobNoJob)
@@ -567,4 +664,21 @@ func testClient(t *testing.T) *Backend {
 
 func dialRedis() (redis.Conn, error) {
 	return redis.Dial("tcp", fmt.Sprintf("%s:%s", redisHost, redisPort))
+}
+
+func newStagedJob(client *Backend) wingman.InternalJob {
+	job := mock.NewWrappedJob()
+	job.StagingID = uuid.Must(uuid.NewRandom()).String()
+
+	raw, err := json.Marshal(job)
+	if err != nil {
+		panic(fmt.Sprint("Failed to marshal job ", err))
+	}
+
+	_, err = client.do("RPUSH", fmtStagingKey(job.StagingID), raw)
+	if err != nil {
+		panic(fmt.Sprint("Failed to add job to redis: ", err))
+	}
+
+	return *job
 }
