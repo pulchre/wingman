@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gomodule/redigo/redis"
 	"github.com/google/uuid"
 	"github.com/pulchre/wingman"
+	"github.com/redis/go-redis/v9"
 )
 
 const successfulJobsCount = "wingman:successful_total"
@@ -28,46 +28,30 @@ type response struct {
 }
 
 type Backend struct {
-	*redis.Pool
+	*redis.Client
 
-	timeout float32
+	timeout time.Duration
 }
 
-type clientCanceller struct {
-	conn redis.Conn
-	cncl redis.Conn
-
-	clientID int
-}
-
-var WrongOptionsTypeError = errors.New("Must be type redis.Options")
+var _ wingman.Backend = &Backend{}
 
 type Options struct {
-	MaxIdle         int
-	MaxActive       int
-	IdleTimeout     time.Duration
-	MaxConnLifetime time.Duration
-	Dial            func() (redis.Conn, error)
+	redis.Options
 
-	BlockingTimeout float32
+	BlockingTimeout time.Duration
 }
 
 func Init(options Options) (*Backend, error) {
 	var backend *Backend
 
-	backend = &Backend{&redis.Pool{
-		MaxIdle:         options.MaxIdle,
-		MaxActive:       options.MaxActive,
-		IdleTimeout:     options.IdleTimeout,
-		MaxConnLifetime: options.MaxConnLifetime,
-		Dial:            options.Dial,
-	},
+	backend = &Backend{
+		redis.NewClient(&options.Options),
 		options.BlockingTimeout,
 	}
 
-	_, err := backend.do("PING")
+	err := backend.Client.Ping(context.Background()).Err()
 	if err != nil {
-		backend.Close()
+		err = errors.Join(err, backend.Close())
 		return nil, err
 	}
 
@@ -80,30 +64,19 @@ func (b Backend) PushJob(job wingman.Job) error {
 		return err
 	}
 
-	client, err := b.getClient()
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-
 	serializedJob, err := json.Marshal(intJob)
 	if err != nil {
 		return err
 	}
 
-	_, err = client.conn.Do("RPUSH", job.Queue(), string(serializedJob))
-
-	return err
+	return b.RPush(context.Background(), job.Queue(), serializedJob).Err()
 }
 
 func (b Backend) PopAndStageJob(ctx context.Context, queue string) (*wingman.InternalJob, error) {
-	client, err := b.getClient()
-	if err != nil {
-		return nil, err
-	}
-	defer client.Close()
+	stagingID := uuid.New()
 
-	stagingID, err := uuid.NewRandom()
+	conn := b.Conn()
+	clientID, err := conn.ClientID(context.Background()).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -113,24 +86,27 @@ func (b Backend) PopAndStageJob(ctx context.Context, queue string) (*wingman.Int
 	go func() {
 		select {
 		case <-ctx.Done():
-			wingman.Log.Info().Int("redis_id", client.clientID).Msg("Unblocking redis client")
-			client.cncl.Do("CLIENT", "UNBLOCK", client.clientID)
+			wingman.Log.Info().Msg("Unblocking Redis client")
+			err := b.ClientUnblock(context.Background(), clientID).Err()
+			if err != nil {
+				wingman.Log.Err(err).Msg("Failed to unblock Redis client")
+			}
 		case <-done:
 			// Ensure we don't leak this goroutine when the parent
 			// method exits normally.
 		}
 	}()
 
-	raw, err := redis.Bytes(client.conn.Do("BLMOVE", queue, fmtStagingKey(stagingID.String()), "LEFT", "RIGHT", b.timeout))
+	raw, err := conn.BLMove(context.Background(), queue, fmtStagingKey(stagingID.String()), "LEFT", "RIGHT", b.timeout).Result()
 	if err != nil {
-		if err == redis.ErrNil {
+		if err == redis.Nil {
 			return nil, wingman.ErrCanceled
 		} else {
 			return nil, err
 		}
 	}
 
-	job, err := wingman.InternalJobFromJSON(raw)
+	job, err := wingman.InternalJobFromJSON([]byte(raw))
 	if err != nil {
 		return nil, err
 	}
@@ -148,37 +124,31 @@ func (b Backend) LockJob(job wingman.InternalJob) (bool, error) {
 		return true, nil
 	}
 
-	client, err := b.getClient()
-	if err != nil {
-		return false, err
-	}
-	defer client.Close()
-
 	serializedJob, err := json.Marshal(job)
 	if err != nil {
 		return false, err
 	}
 
 	redisLockKey := fmtLockKey(lockKey, job.ID)
-	_, err = client.conn.Do("SET", redisLockKey, string(serializedJob), "EX", "300")
+
+	err = b.Set(context.Background(), redisLockKey, serializedJob, 5*time.Minute).Err()
 	if err != nil {
 		return false, err
 	}
 
-	count, err := b.lockCount(client, lockKey)
+	count, err := b.lockCount(lockKey)
 	if err != nil {
 		return false, err
 	}
 
 	if count > concurrency {
-		_, err1 := client.conn.Do("LMOVE", fmtStagingKey(job.StagingID), fmtHeldKey(lockKey), "RIGHT", "RIGHT")
-		_, err2 := client.conn.Do("DEL", redisLockKey)
-		err = errors.Join(err1, err2)
+		err = b.LMove(context.Background(), fmtStagingKey(job.StagingID), fmtHeldKey(lockKey), "RIGHT", "RIGHT").Err()
+		err = errors.Join(err, b.Del(context.Background(), redisLockKey).Err())
 		if err != nil {
 			return false, err
 		}
 
-		count, err = b.lockCount(client, lockKey)
+		count, err = b.lockCount(lockKey)
 		if err != nil {
 			return false, err
 		}
@@ -187,8 +157,8 @@ func (b Backend) LockJob(job wingman.InternalJob) (bool, error) {
 		// tried to pull a held job before the above job was moved to the held
 		// list.
 		if count < concurrency {
-			_, err = client.conn.Do("LMOVE", fmtHeldKey(lockKey), job.Queue(), "LEFT", "LEFT")
-			if err != nil {
+			err = b.LMove(context.Background(), fmtHeldKey(lockKey), job.Queue(), "RIGHT", "RIGHT").Err()
+			if err != nil && err != redis.Nil {
 				return false, err
 			}
 		}
@@ -207,38 +177,29 @@ func (b Backend) ReleaseJob(job wingman.InternalJob) error {
 		return nil
 	}
 
-	client, err := b.getClient()
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-
 	redisLockKey := fmtLockKey(lockKey, job.ID)
-	_, err1 := client.conn.Do("LMOVE", fmtHeldKey(lockKey), job.Queue(), "LEFT", "LEFT")
-	_, err2 := client.conn.Do("DEL", redisLockKey)
-	return errors.Join(err1, err2)
+	err := b.LMove(context.Background(), fmtHeldKey(lockKey), job.Queue(), "LEFT", "LEFT").Err()
+	if err == redis.Nil {
+		err = nil
+	}
+
+	return errors.Join(err, b.Del(context.Background(), redisLockKey).Err())
 }
 
 func (b Backend) ProcessJob(stagingID string) error {
-	client, err := b.getClient()
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-
-	raw, err := redis.ByteSlices(client.conn.Do("LRANGE", fmtStagingKey(stagingID), 0, 1))
+	raw, err := b.LRange(context.Background(), fmtStagingKey(stagingID), 0, 1).Result()
 	if err != nil {
 		return err
 	} else if len(raw) == 0 {
 		return wingman.ErrorJobNotStaged
 	}
 
-	job, err := wingman.InternalJobFromJSON(raw[0])
+	job, err := wingman.InternalJobFromJSON([]byte(raw[0]))
 	if err != nil {
 		return wingman.ErrorJobNotStaged
 	}
 
-	_, err = client.conn.Do("LMOVE", fmtStagingKey(stagingID), fmtProcessingKey(job.ID), "LEFT", "RIGHT")
+	err = b.LMove(context.Background(), fmtStagingKey(stagingID), fmtProcessingKey(job.ID), "LEFT", "RIGHT").Err()
 	if err != nil {
 		return err
 	}
@@ -246,25 +207,19 @@ func (b Backend) ProcessJob(stagingID string) error {
 }
 
 func (b Backend) ReenqueueStagedJob(stagingID string) error {
-	client, err := b.getClient()
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-
-	raw, err := redis.ByteSlices(client.conn.Do("LRANGE", fmtStagingKey(stagingID), 0, 1))
+	raw, err := b.LRange(context.Background(), fmtStagingKey(stagingID), 0, 1).Result()
 	if err != nil {
 		return err
 	} else if len(raw) < 1 {
 		return wingman.ErrorJobNotStaged
 	}
 
-	job, err := wingman.InternalJobFromJSON(raw[0])
+	job, err := wingman.InternalJobFromJSON([]byte(raw[0]))
 	if err != nil {
 		return err
 	}
 
-	_, err = client.conn.Do("LMOVE", fmtStagingKey(stagingID), job.Queue(), "LEFT", "RIGHT")
+	err = b.LMove(context.Background(), fmtStagingKey(stagingID), job.Queue(), "LEFT", "RIGHT").Err()
 	if err != nil {
 		return err
 	}
@@ -273,36 +228,15 @@ func (b Backend) ReenqueueStagedJob(stagingID string) error {
 }
 
 func (b Backend) ClearJob(jobID string) error {
-	client, err := b.getClient()
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-
-	_, err = client.conn.Do("DEL", fmtProcessingKey(jobID))
-
-	return err
+	return b.Del(context.Background(), fmtProcessingKey(jobID)).Err()
 }
 
 func (b Backend) FailJob(jobID string) error {
-	client, err := b.getClient()
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-
-	_, err = client.conn.Do("LMOVE", fmtProcessingKey(jobID), fmtFailedKey(jobID), "RIGHT", "RIGHT")
-	return err
+	return b.LMove(context.Background(), fmtProcessingKey(jobID), fmtFailedKey(jobID), "RIGHT", "RIGHT").Err()
 }
 
 func (b Backend) StagedJobs() ([]*wingman.InternalJob, error) {
-	client, err := b.getClient()
-	if err != nil {
-		return nil, err
-	}
-	defer client.Close()
-
-	keys, err := redis.Strings(client.conn.Do("KEYS", fmtStagingKey("*")))
+	keys, err := b.Keys(context.Background(), fmtStagingKey("*")).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -310,12 +244,12 @@ func (b Backend) StagedJobs() ([]*wingman.InternalJob, error) {
 	jobs := make([]*wingman.InternalJob, len(keys))
 
 	for i, key := range keys {
-		raw, err := redis.ByteSlices(client.conn.Do("LRANGE", key, 0, 0))
+		raw, err := b.LRange(context.Background(), key, 0, 0).Result()
 		if err != nil {
 			return nil, err
 		}
 
-		job, err := wingman.InternalJobFromJSON(raw[0])
+		job, err := wingman.InternalJobFromJSON([]byte(raw[0]))
 		if err != nil {
 			return nil, wingman.NewBackendIDError(key, err)
 		}
@@ -330,149 +264,64 @@ func (b Backend) StagedJobs() ([]*wingman.InternalJob, error) {
 }
 
 func (b Backend) ClearStagedJob(stagingID string) error {
-	client, err := b.getClient()
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-
-	_, err = client.conn.Do("DEL", fmtStagingKey(stagingID))
-
-	return err
+	return b.Del(context.Background(), fmtStagingKey(stagingID)).Err()
 }
 
 func (b Backend) Peek(queue string) (*wingman.InternalJob, error) {
-	client, err := b.getClient()
-	if err != nil {
-		return nil, err
-	}
-	defer client.Close()
-
-	raw, err := redis.ByteSlices(client.conn.Do("LRANGE", queue, 0, 0))
+	raw, err := b.LRange(context.Background(), queue, 0, 0).Result()
 	if err != nil {
 		return nil, err
 	}
 
 	if len(raw) > 0 {
-		return wingman.InternalJobFromJSON(raw[0])
+		return wingman.InternalJobFromJSON([]byte(raw[0]))
 	} else {
 		return nil, nil
 	}
 }
 
-func (b Backend) Size(queue string) int {
-	client, err := b.getClient()
-	if err != nil {
-		return 0
-	}
-	defer client.Close()
-
-	size, _ := redis.Int(client.conn.Do("LLEN", queue))
-
-	return int(size)
+func (b Backend) Size(queue string) uint64 {
+	size, _ := b.LLen(context.Background(), queue).Uint64()
+	return size
 }
 
-func (b Backend) SuccessfulJobs() int {
-	client, err := b.getClient()
-	if err != nil {
-		return 0
-	}
-	defer client.Close()
-
-	count, _ := redis.Int(client.conn.Do("GET", successfulJobsCount))
-
+func (b Backend) SuccessfulJobs() uint64 {
+	count, _ := b.Get(context.Background(), successfulJobsCount).Uint64()
 	return count
 }
 
 func (b Backend) IncSuccessfulJobs() {
-	client, err := b.getClient()
-	if err != nil {
-		return
-	}
-	defer client.Close()
-
-	client.conn.Do("INCR", successfulJobsCount)
+	b.Incr(context.Background(), successfulJobsCount)
 }
 
-func (b Backend) FailedJobs() int {
-	client, err := b.getClient()
-	if err != nil {
-		return 0
-	}
-	defer client.Close()
-
-	count, _ := redis.Int(client.conn.Do("GET", failedJobsCount))
-
+func (b Backend) FailedJobs() uint64 {
+	count, _ := b.Get(context.Background(), failedJobsCount).Uint64()
 	return count
 }
 
 func (b Backend) IncFailedJobs() {
-	client, err := b.getClient()
-	if err != nil {
-		return
-	}
-	defer client.Close()
-
-	client.conn.Do("INCR", failedJobsCount)
+	b.Incr(context.Background(), failedJobsCount)
 }
 
 // Release any resources used
-func (b Backend) Close() error {
-	var err error
-
-	if b.Pool != nil {
-		err = b.Pool.Close()
-		b.Pool = nil
+func (b Backend) Close() (err error) {
+	if b.Client != nil {
+		err = b.Client.Close()
+		b.Client = nil
 	}
 
-	return err
+	return
 }
 
-func (b Backend) do(cmd string, args ...interface{}) (interface{}, error) {
-	conn := b.Pool.Get()
-	defer conn.Close()
-
-	return conn.Do(cmd, args...)
-}
-
-func (b Backend) getClient() (clientCanceller, error) {
-	var err error
-
-	c := clientCanceller{}
-	c.conn = b.Pool.Get()
-	c.clientID, err = redis.Int(c.conn.Do("CLIENT", "ID"))
-	if err != nil {
-		c.conn.Close()
-		return c, err
-	}
-
-	c.cncl = b.Pool.Get()
-	_, err = c.cncl.Do("CLIENT", "ID")
-	if err != nil {
-		c.conn.Close()
-		c.cncl.Close()
-		return c, err
-	}
-
-	return c, nil
-}
-
-func (b Backend) lockCount(client clientCanceller, key string) (int, error) {
+func (b Backend) lockCount(key string) (int, error) {
 	redisLockKeyMatch := fmtLockKey(key, "*")
 	var count int
 	var cursor uint64
 	for {
-		reply, err := redis.Values(client.cncl.Do("SCAN", cursor, "MATCH", redisLockKeyMatch))
+		keys, cursor, err := b.Scan(context.Background(), cursor, redisLockKeyMatch, 0).Result()
 		if err != nil {
 			return 0, err
 		}
-
-		var keys []string
-		_, err = redis.Scan(reply, &cursor, &keys)
-		if err != nil {
-			return 0, err
-		}
-
 		count += len(keys)
 		if cursor == 0 {
 			break
@@ -480,22 +329,6 @@ func (b Backend) lockCount(client clientCanceller, key string) (int, error) {
 	}
 
 	return count, nil
-}
-
-func (c clientCanceller) Close() error {
-	err := c.conn.Close()
-	err2 := c.cncl.Close()
-
-	c.conn = nil
-	c.cncl = nil
-
-	if err != nil {
-		return err
-	} else if err2 != nil {
-		return err2
-	}
-
-	return nil
 }
 
 func fmtStagingKey(id string) string {

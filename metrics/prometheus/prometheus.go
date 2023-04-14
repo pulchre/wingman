@@ -84,7 +84,7 @@ func watch(ctx context.Context, backend wingman.Backend, opts Options) {
 	ticker := time.NewTicker(time.Duration(opts.UpdateFrequency))
 	defer ticker.Stop()
 
-	lastCounter := map[string]int{
+	lastCounter := map[string]uint64{
 		successfulJobsTotal: 0,
 		failedJobTotal:      0,
 	}

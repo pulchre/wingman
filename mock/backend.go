@@ -26,8 +26,8 @@ type Backend struct {
 	stopping bool
 	notifier *sync.Cond
 
-	successfulCount int
-	failedCount     int
+	successfulCount uint64
+	failedCount     uint64
 }
 
 func NewBackend() *Backend {
@@ -246,12 +246,12 @@ func (b *Backend) Peek(queue string) (*wingman.InternalJob, error) {
 	return nil, nil
 }
 
-func (b *Backend) Size(queue string) int { return len(b.queues[queue]) }
+func (b *Backend) Size(queue string) uint64 { return uint64(len(b.queues[queue])) }
 
-func (b *Backend) SuccessfulJobs() int { return b.successfulCount }
-func (b *Backend) IncSuccessfulJobs()  { b.successfulCount++ }
-func (b *Backend) FailedJobs() int     { return b.failedCount }
-func (b *Backend) IncFailedJobs()      { b.failedCount++ }
+func (b *Backend) SuccessfulJobs() uint64 { return b.successfulCount }
+func (b *Backend) IncSuccessfulJobs()     { b.successfulCount++ }
+func (b *Backend) FailedJobs() uint64     { return b.failedCount }
+func (b *Backend) IncFailedJobs()         { b.failedCount++ }
 
 func (b *Backend) Close() error { return nil }
 

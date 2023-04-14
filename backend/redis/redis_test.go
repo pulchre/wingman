@@ -3,15 +3,17 @@ package redis
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/gomodule/redigo/redis"
 	"github.com/google/uuid"
 	"github.com/pulchre/wingman"
 	"github.com/pulchre/wingman/mock"
+	"github.com/redis/go-redis/v9"
 )
 
 var redisHost = ""
@@ -26,27 +28,51 @@ func init() {
 }
 
 func TestInit(t *testing.T) {
-	options := Options{
-		MaxIdle: 1,
-		Dial:    dialRedis,
+	t.Run("Success", testInitSuccess)
+	t.Run("Fail", testInitFail)
+}
+
+func testInitSuccess(t *testing.T) {
+	timeout := 10 * time.Second
+	backend, err := Init(Options{BlockingTimeout: timeout})
+	if backend == nil {
+		t.Error("Expected backend to be initialized")
+	} else if backend.timeout != timeout {
+		t.Errorf("Expected backend timeout to be %v, got %v", timeout, backend.timeout)
 	}
 
-	got1, got2 := Init(options)
-	if (got1 != nil && got1.Pool.MaxIdle != 1) || got2 != nil {
-		t.Errorf("Init(%v) == %v, `%v`, want %v, `%v`", options, got1, got2, "redis Pool with MaxIdle 1", nil)
+	if err != nil {
+		t.Error("Expected err to be nil, got", err)
+	}
+}
+
+func testInitFail(t *testing.T) {
+	expected := errors.New("dial tcp [::1]:1111: connect: connection refused")
+
+	backend, err := Init(Options{
+		Options: redis.Options{
+			Addr: "localhost:1111",
+		},
+	})
+	if backend != nil {
+		t.Error("Expected backend to be nil")
 	}
 
-	// Ensure that redis.Backend implements the `wingman.Backend`
-	// interface.
-	var _ wingman.Backend = got1
+	if err == nil {
+		t.Errorf("Expected err to be %v, got nil", err)
+	} else if !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("Expected error to be %v, got %v", expected, errors.Unwrap(err))
+	}
+
 }
 
 func TestPushJob(t *testing.T) {
 	t.Run("Success", testPushJobSuccess)
+	t.Run("NilError", testPushJobNil)
 }
 
 func testPushJobSuccess(t *testing.T) {
-	b := testClient(t)
+	b := testClient()
 	defer b.Close()
 
 	job := mock.NewJob()
@@ -66,6 +92,16 @@ func testPushJobSuccess(t *testing.T) {
 	}
 }
 
+func testPushJobNil(t *testing.T) {
+	b := testClient()
+	defer b.Close()
+
+	err := b.PushJob(nil)
+	if err == nil {
+		t.Fatal("Expected error got nil")
+	}
+}
+
 func TestPopAndStageJob(t *testing.T) {
 	t.Run("Success", testPopAndStageJobSuccess)
 	t.Run("Timeout", testPopAndStageJobTimeout)
@@ -73,7 +109,7 @@ func TestPopAndStageJob(t *testing.T) {
 }
 
 func testPopAndStageJobSuccess(t *testing.T) {
-	b := testClient(t)
+	b := testClient()
 	defer b.Close()
 
 	initialJob, _ := wingman.WrapJob(mock.NewJob())
@@ -83,7 +119,7 @@ func testPopAndStageJobSuccess(t *testing.T) {
 		panic(err)
 	}
 
-	b.do("RPUSH", initialJob.Job.Queue(), raw)
+	b.RPush(context.Background(), initialJob.Job.Queue(), raw)
 
 	job, err := b.PopAndStageJob(context.Background(), mock.DefaultQueue)
 	if err != nil {
@@ -116,10 +152,10 @@ func testPopAndStageJobTimeout(t *testing.T) {
 		t.Skip("Skipping long-running test")
 	}
 
-	b := testClient(t)
+	b := testClient()
 	defer b.Close()
 
-	b.timeout = 0.01
+	b.timeout = 1 * time.Second
 
 	job, err := b.PopAndStageJob(context.Background(), mock.DefaultQueue)
 	if job != nil {
@@ -132,14 +168,8 @@ func testPopAndStageJobTimeout(t *testing.T) {
 }
 
 func testPopAndStageJobContextDone(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping long-running test")
-	}
-
-	b := testClient(t)
+	b := testClient()
 	defer b.Close()
-
-	b.timeout = 10
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
@@ -155,8 +185,8 @@ func testPopAndStageJobContextDone(t *testing.T) {
 		t.Errorf("Expected error nil returned: %v", err)
 	}
 
-	if end.Sub(start) > 10*time.Second {
-		t.Error("Timed-out at 10 seconds")
+	if end.Sub(start) > 1*time.Second {
+		t.Error("Timed-out at 2 seconds")
 	}
 }
 
@@ -166,7 +196,7 @@ func TestLockJob(t *testing.T) {
 }
 
 func testLockJobLock(t *testing.T) {
-	b := testClient(t)
+	b := testClient()
 	defer b.Close()
 
 	job1 := newStagedJob(b)
@@ -182,12 +212,12 @@ func testLockJobLock(t *testing.T) {
 		t.Error("Unable to lock job")
 	}
 
-	exists, err := redis.Bool(b.do("EXISTS", fmtLockKey(job1.Job.LockKey(), job1.ID)))
+	exists, err := b.Exists(context.Background(), fmtLockKey(job1.Job.LockKey(), job1.ID)).Result()
 	if err != nil {
 		t.Fatal("Unable to check if lock key exists ", err)
 	}
 
-	if !exists {
+	if exists != 1 {
 		t.Error("Failed to lock job")
 	}
 
@@ -200,11 +230,10 @@ func testLockJobLock(t *testing.T) {
 	if !ok {
 		t.Error("Unable to lock job")
 	}
-
 }
 
 func testLockJobHold(t *testing.T) {
-	b := testClient(t)
+	b := testClient()
 	defer b.Close()
 
 	job1 := newStagedJob(b)
@@ -233,12 +262,12 @@ func testLockJobHold(t *testing.T) {
 		t.Error("Expected job to be held")
 	}
 
-	exists, err := redis.Bool(b.do("EXISTS", fmtLockKey(job2.Job.LockKey(), job2.ID)))
+	exists, err := b.Exists(context.Background(), fmtLockKey(job2.Job.LockKey(), job2.ID)).Result()
 	if err != nil {
 		t.Fatal("Unable to check if lock key exists ", err)
 	}
 
-	if exists {
+	if exists == 1 {
 		t.Error("Should not have locked job")
 	}
 
@@ -247,7 +276,7 @@ func testLockJobHold(t *testing.T) {
 		t.Fatal("ReleaseJob expected nil error got: ", err)
 	}
 
-	length, err := redis.Int(b.do("LLEN", job2.Queue()))
+	length, err := b.LLen(context.Background(), job2.Queue()).Result()
 	if err != nil {
 		panic(err)
 	}
@@ -263,7 +292,7 @@ func TestProcessJob(t *testing.T) {
 }
 
 func testProcessJobSuccess(t *testing.T) {
-	b := testClient(t)
+	b := testClient()
 	defer b.Close()
 
 	initialJob := mock.NewWrappedJob()
@@ -274,7 +303,7 @@ func testProcessJobSuccess(t *testing.T) {
 		t.Fatal("Failed to marshal job: ", err)
 	}
 
-	_, err = b.do("RPUSH", fmtStagingKey(stagingID.String()), raw)
+	err = b.RPush(context.Background(), fmtStagingKey(stagingID.String()), raw).Err()
 	if err != nil {
 		t.Fatal("Failed to add job to redis: ", err)
 	}
@@ -284,12 +313,12 @@ func testProcessJobSuccess(t *testing.T) {
 		t.Fatal("Expected nil error, got: ", err)
 	}
 
-	retrieved, err := redis.ByteSlices(b.do("LRANGE", fmtProcessingKey(initialJob.ID), 0, 1))
+	retrieved, err := b.LRange(context.Background(), fmtProcessingKey(initialJob.ID), 0, 1).Result()
 	if err != nil {
 		t.Fatal("Failed to retrieve job from redis ", err)
 	}
 
-	job, err := wingman.InternalJobFromJSON(retrieved[0])
+	job, err := wingman.InternalJobFromJSON([]byte(retrieved[0]))
 	if err != nil {
 		t.Fatal("Failed to unmarshal job ", err)
 	}
@@ -300,7 +329,7 @@ func testProcessJobSuccess(t *testing.T) {
 }
 
 func testProcessJobNoJob(t *testing.T) {
-	b := testClient(t)
+	b := testClient()
 	defer b.Close()
 
 	stagingID := uuid.Must(uuid.NewRandom())
@@ -312,12 +341,12 @@ func testProcessJobNoJob(t *testing.T) {
 }
 
 func TestClearProcessorSuccess(t *testing.T) {
-	b := testClient(t)
+	b := testClient()
 	defer b.Close()
 
 	jobID := "job1"
 
-	_, err := b.do("RPUSH", fmtProcessingKey(jobID), "some job")
+	err := b.RPush(context.Background(), fmtProcessingKey(jobID), "some job").Err()
 	if err != nil {
 		t.Fatal("Failed to push data to redis with error: ", err)
 	}
@@ -327,7 +356,7 @@ func TestClearProcessorSuccess(t *testing.T) {
 		t.Error("Expected nil error, got: ", err)
 	}
 
-	keys, err := redis.Strings(b.do("KEYS", fmtProcessingKey(jobID)))
+	keys, err := b.Keys(context.Background(), fmtProcessingKey(jobID)).Result()
 	if err != nil {
 		t.Fatal("Failed to retrieve key with error: ", err)
 	}
@@ -338,8 +367,8 @@ func TestClearProcessorSuccess(t *testing.T) {
 }
 
 func TestFailJob(t *testing.T) {
-	c := testClient(t)
-	defer c.Close()
+	b := testClient()
+	defer b.Close()
 
 	job := mock.NewWrappedJob()
 
@@ -348,17 +377,17 @@ func TestFailJob(t *testing.T) {
 		panic(err)
 	}
 
-	_, err = c.do("RPUSH", fmtProcessingKey(job.ID), raw)
+	err = b.RPush(context.Background(), fmtProcessingKey(job.ID), raw).Err()
 	if err != nil {
 		t.Fatal("Failed to push data to redis with error: ", err)
 	}
 
-	err = c.FailJob(job.ID)
+	err = b.FailJob(job.ID)
 	if err != nil {
 		t.Error("Expected nil error, got: ", err)
 	}
 
-	keys, err := redis.Strings(c.do("KEYS", fmtFailedKey(job.ID)))
+	keys, err := b.Keys(context.Background(), fmtFailedKey(job.ID)).Result()
 	if err != nil {
 		t.Fatal("Failed to retrieve key with error: ", err)
 	}
@@ -375,7 +404,7 @@ func TestReenqueueStagedJob(t *testing.T) {
 }
 
 func testReenqueueStagedJobSuccess(t *testing.T) {
-	b := testClient(t)
+	b := testClient()
 	defer b.Close()
 
 	initialJob := mock.NewWrappedJob()
@@ -386,7 +415,7 @@ func testReenqueueStagedJobSuccess(t *testing.T) {
 		t.Fatal("Failed to marshal job: ", err)
 	}
 
-	_, err = b.do("RPUSH", fmtStagingKey(stagingID.String()), raw)
+	err = b.RPush(context.Background(), fmtStagingKey(stagingID.String()), raw).Err()
 	if err != nil {
 		t.Fatal("Failed to add job to redis: ", err)
 	}
@@ -396,12 +425,12 @@ func testReenqueueStagedJobSuccess(t *testing.T) {
 		t.Fatal("Expected nil error, got: ", err)
 	}
 
-	retrieved, err := redis.ByteSlices(b.do("LRANGE", initialJob.Queue(), 0, 1))
+	retrieved, err := b.LRange(context.Background(), initialJob.Queue(), 0, 1).Result()
 	if err != nil {
 		t.Fatal("Failed to retrieve job from redis ", err)
 	}
 
-	job, err := wingman.InternalJobFromJSON(retrieved[0])
+	job, err := wingman.InternalJobFromJSON([]byte(retrieved[0]))
 	if err != nil {
 		t.Fatal("Failed to unmarshal job ", err)
 	}
@@ -412,12 +441,12 @@ func testReenqueueStagedJobSuccess(t *testing.T) {
 }
 
 func testReenqueueStagedJobInvalidJob(t *testing.T) {
-	b := testClient(t)
+	b := testClient()
 	defer b.Close()
 
 	stagingID := uuid.Must(uuid.NewRandom())
 
-	_, err := b.do("RPUSH", fmtStagingKey(stagingID.String()), "invalid job")
+	err := b.RPush(context.Background(), fmtStagingKey(stagingID.String()), "invalid job").Err()
 	if err != nil {
 		t.Fatal("Failed to add job to redis: ", err)
 	}
@@ -429,7 +458,7 @@ func testReenqueueStagedJobInvalidJob(t *testing.T) {
 }
 
 func testReenqueueStagedJobJobNotFound(t *testing.T) {
-	b := testClient(t)
+	b := testClient()
 	defer b.Close()
 
 	stagingID := uuid.Must(uuid.NewRandom())
@@ -446,7 +475,7 @@ func TestStagedJobs(t *testing.T) {
 }
 
 func testStagedJobsSuccess(t *testing.T) {
-	b := testClient(t)
+	b := testClient()
 	defer b.Close()
 
 	initialJob1 := mock.NewWrappedJob()
@@ -462,12 +491,12 @@ func testStagedJobsSuccess(t *testing.T) {
 		t.Fatal("Failed to marshal job: ", err)
 	}
 
-	_, err = b.do("RPUSH", fmtStagingKey(uuid.Must(uuid.NewRandom()).String()), raw1)
+	err = b.RPush(context.Background(), fmtStagingKey(uuid.Must(uuid.NewRandom()).String()), raw1).Err()
 	if err != nil {
 		t.Fatal("Failed to add job to redis: ", err)
 	}
 
-	_, err = b.do("RPUSH", fmtStagingKey(uuid.Must(uuid.NewRandom()).String()), raw2)
+	err = b.RPush(context.Background(), fmtStagingKey(uuid.Must(uuid.NewRandom()).String()), raw2).Err()
 	if err != nil {
 		t.Fatal("Failed to add job to redis: ", err)
 	}
@@ -495,14 +524,14 @@ func testStagedJobsSuccess(t *testing.T) {
 }
 
 func testStagedJobsInvalidJobPayload(t *testing.T) {
-	b := testClient(t)
+	b := testClient()
 	defer b.Close()
 
 	val := "some value"
 	id := uuid.Must(uuid.NewRandom())
 	key := fmtStagingKey(id.String())
 
-	_, err := b.do("RPUSH", key, val)
+	err := b.RPush(context.Background(), key, val).Err()
 	if err != nil {
 		t.Fatal("Failed to add job to redis: ", err)
 	}
@@ -524,7 +553,7 @@ func testStagedJobsInvalidJobPayload(t *testing.T) {
 }
 
 func TestClearStagedJobSuccess(t *testing.T) {
-	b := testClient(t)
+	b := testClient()
 	defer b.Close()
 
 	initialJob := mock.NewWrappedJob()
@@ -535,7 +564,7 @@ func TestClearStagedJobSuccess(t *testing.T) {
 		t.Fatal("Failed to marshal job: ", err)
 	}
 
-	_, err = b.do("RPUSH", fmtStagingKey(id.String()), raw)
+	err = b.RPush(context.Background(), fmtStagingKey(id.String()), raw).Err()
 	if err != nil {
 		t.Error("Unable to add value to redis: ", err)
 	}
@@ -545,7 +574,7 @@ func TestClearStagedJobSuccess(t *testing.T) {
 		t.Error("Expected nil error, got: ", err)
 	}
 
-	resp, err := redis.ByteSlices(b.do("LRANGE", fmtStagingKey(id.String()), 0, 0))
+	resp, err := b.LRange(context.Background(), fmtStagingKey(id.String()), 0, 0).Result()
 	if err != nil {
 		t.Error("Expected nil error, got: ", err)
 	} else if len(resp) > 0 {
@@ -564,7 +593,7 @@ func TestPeek(t *testing.T) {
 }
 
 func testPeekSuccess(t *testing.T) {
-	b := testClient(t)
+	b := testClient()
 	defer b.Close()
 
 	initialJob := mock.NewWrappedJob()
@@ -574,7 +603,7 @@ func testPeekSuccess(t *testing.T) {
 		panic(err)
 	}
 
-	b.do("RPUSH", initialJob.Queue(), raw)
+	b.RPush(context.Background(), initialJob.Queue(), raw)
 	size := b.Size(mock.DefaultQueue)
 
 	job, err := b.Peek(mock.DefaultQueue)
@@ -599,7 +628,7 @@ func testPeekSuccess(t *testing.T) {
 }
 
 func testPeekSuccessWithoutJob(t *testing.T) {
-	b := testClient(t)
+	b := testClient()
 	defer b.Close()
 
 	job, err := b.Peek(mock.DefaultQueue)
@@ -618,7 +647,7 @@ func testPeekSuccessWithoutJob(t *testing.T) {
 }
 
 func TestSize(t *testing.T) {
-	b := testClient(t)
+	b := testClient()
 	defer b.Close()
 
 	size := b.Size(mock.DefaultQueue)
@@ -634,8 +663,7 @@ func TestSize(t *testing.T) {
 		panic(err)
 	}
 
-	b.do("RPUSH", initialJob.Queue(), raw)
-
+	b.RPush(context.Background(), initialJob.Queue(), raw)
 	size = b.Size(mock.DefaultQueue)
 
 	if size != 1 {
@@ -643,27 +671,20 @@ func TestSize(t *testing.T) {
 	}
 }
 
-func testClient(t *testing.T) *Backend {
+func testClient() *Backend {
 	client, err := Init(Options{
-		MaxIdle:         2,
-		MaxActive:       2,
-		Dial:            dialRedis,
-		BlockingTimeout: 10,
+		BlockingTimeout: 2 * time.Second,
 	})
 	if err != nil {
-		t.Fatal("Failed to create testing client: ", err)
+		panic(fmt.Sprint("Failed to create testing client: ", err))
 	}
 
-	_, err = client.do("FLUSHALL")
+	err = client.Client.FlushAll(context.Background()).Err()
 	if err != nil {
-		t.Fatal("Failed to create testing client: ", err)
+		panic(fmt.Sprint("Failed to create testing client: ", err))
 	}
 
 	return client
-}
-
-func dialRedis() (redis.Conn, error) {
-	return redis.Dial("tcp", fmt.Sprintf("%s:%s", redisHost, redisPort))
 }
 
 func newStagedJob(client *Backend) wingman.InternalJob {
@@ -675,7 +696,7 @@ func newStagedJob(client *Backend) wingman.InternalJob {
 		panic(fmt.Sprint("Failed to marshal job ", err))
 	}
 
-	_, err = client.do("RPUSH", fmtStagingKey(job.StagingID), raw)
+	err = client.RPush(context.Background(), fmtStagingKey(job.StagingID), raw).Err()
 	if err != nil {
 		panic(fmt.Sprint("Failed to add job to redis: ", err))
 	}

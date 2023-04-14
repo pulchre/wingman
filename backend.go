@@ -68,17 +68,17 @@ type Backend interface {
 	Peek(queue string) (*InternalJob, error)
 
 	// Size returns the length of the queue.
-	Size(queue string) int
+	Size(queue string) uint64
 
 	// SuccessfulJobs returns the number of jobs successfully processed.
-	SuccessfulJobs() int
+	SuccessfulJobs() uint64
 
 	// IncSuccessfulJobs increments the successful jobs count.
 	IncSuccessfulJobs()
 
 	// FailedJobs returns the number of jobs which failed during
 	// processing.
-	FailedJobs() int
+	FailedJobs() uint64
 
 	// IncFailedJobs increments the failed jobs count.
 	IncFailedJobs()

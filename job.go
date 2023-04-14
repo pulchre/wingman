@@ -21,6 +21,7 @@ const ContextJobIDKey = ContextKey("jobID")
 
 var ErrorJobNotStaged = errors.New("Could not find staged job")
 var ErrorJobNotFound = errors.New("Could not find any job")
+var ErrorNilJob = errors.New("Job is nil")
 
 // Job is the interface definition for a given job. Handler should return the
 // name of the handler that this job will be processed by. Payload should be
@@ -81,13 +82,17 @@ func InternalJobFromJSON(b []byte) (*InternalJob, error) {
 }
 
 func WrapJob(j Job) (*InternalJob, error) {
-	id, err := uuid.NewRandom()
+	if j == nil {
+		return nil, ErrorNilJob
+	}
+
+	id := uuid.New()
 
 	return &InternalJob{
 		ID:       id.String(),
 		TypeName: j.TypeName(),
 		Job:      j,
-	}, err
+	}, nil
 }
 
 func (j InternalJob) Queue() string { return j.Job.Queue() }
