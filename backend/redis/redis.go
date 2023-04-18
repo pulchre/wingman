@@ -80,6 +80,7 @@ func (b Backend) PopAndStageJob(ctx context.Context, queue string) (*wingman.Int
 	if err != nil {
 		return nil, err
 	}
+	defer conn.Close()
 
 	done := make(chan struct{})
 	defer close(done)
