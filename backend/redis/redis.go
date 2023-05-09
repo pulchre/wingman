@@ -318,11 +318,15 @@ func (b Backend) lockCount(key string) (int, error) {
 	redisLockKeyMatch := fmtLockKey(key, "*")
 	var count int
 	var cursor uint64
+	var err error
 	for {
-		keys, cursor, err := b.Scan(context.Background(), cursor, redisLockKeyMatch, 0).Result()
+		var keys []string
+
+		keys, cursor, err = b.Scan(context.Background(), cursor, redisLockKeyMatch, 0).Result()
 		if err != nil {
 			return 0, err
 		}
+
 		count += len(keys)
 		if cursor == 0 {
 			break
