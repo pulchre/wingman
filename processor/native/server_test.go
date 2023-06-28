@@ -72,7 +72,7 @@ func TestServerStart(t *testing.T) {
 			err: false,
 		},
 		{
-			in:  DefaultOptions().SetBind("invalid"),
+			in:  DefaultOptions().SetBind("-1"),
 			err: true,
 		},
 		{
