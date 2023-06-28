@@ -237,9 +237,23 @@ func (b Backend) FailJob(jobID string) error {
 }
 
 func (b Backend) StagedJobs() ([]*wingman.InternalJob, error) {
-	keys, err := b.Keys(context.Background(), fmtStagingKey("*")).Result()
-	if err != nil {
-		return nil, err
+	var cursor uint64
+	var keys []string
+	var err error
+
+	for {
+		var nextKeys []string
+
+		nextKeys, cursor, err = b.Scan(context.Background(), cursor, fmtStagingKey("*"), 0).Result()
+		if err != nil {
+			return nil, err
+		}
+
+		keys = append(keys, nextKeys...)
+
+		if cursor == 0 {
+			break
+		}
 	}
 
 	jobs := make([]*wingman.InternalJob, len(keys))

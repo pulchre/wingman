@@ -506,8 +506,13 @@ func testStagedJobsSuccess(t *testing.T) {
 		t.Fatal("Error retrieving staged jobs: ", err)
 	}
 
+	var resultIDs []string
+	for _, j := range jobs {
+		resultIDs = append(resultIDs, j.ID)
+	}
+
 	unexpectedResults := func() {
-		t.Errorf("Unexpected jobs returned. Expected: %v. got: %v", []*wingman.InternalJob{initialJob1, initialJob2}, jobs)
+		t.Errorf("Unexpected jobs returned. Expected: %v. got: %v", []string{initialJob1.ID, initialJob2.ID}, resultIDs)
 	}
 
 	if len(jobs) == 2 {
