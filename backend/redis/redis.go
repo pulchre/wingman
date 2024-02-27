@@ -319,7 +319,7 @@ func (b Backend) IncFailedJobs() {
 }
 
 // Release any resources used
-func (b Backend) Close() (err error) {
+func (b *Backend) Close() (err error) {
 	if b.Client != nil {
 		err = b.Client.Close()
 		b.Client = nil
