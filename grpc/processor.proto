@@ -5,29 +5,28 @@ option go_package = "github.com/pulchre/wingman;grpc";
 package wingman;
 
 service Processor {
-	rpc Initialize (stream Message) returns (stream Message) {}
+  rpc Initialize(stream Message) returns (stream Message) {}
 }
 
 enum Type {
-	CONNECT = 0;
-	JOB = 1;
-	RESULT = 2;
-	SHUTDOWN = 3;
+  CONNECT = 0;
+  JOB = 1;
+  RESULT = 2;
+  SHUTDOWN = 3;
 }
 
 message Message {
-	Type Type = 1;
-	Job Job = 2;
-	int32 PID = 3;
-	Error Error = 4;
+  Type Type = 1;
+  Job Job = 2;
+  int32 PID = 3;
+  Error Error = 4;
 }
 
 message Job {
-	string ID = 1;
-	string TypeName = 2;
-	bytes Payload = 4;
+  string ID = 1;
+  int32 LockID = 2;
+  string TypeName = 3;
+  bytes Payload = 4;
 }
 
-message Error {
-	string message = 1;
-}
+message Error { string message = 1; }

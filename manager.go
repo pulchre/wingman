@@ -11,8 +11,10 @@ import (
 	"github.com/rs/zerolog"
 )
 
-const signalReceivedMsg = "Shutting down safely. Send signal again to shutdown immediately. Warning: data loss possible."
-const signalHardShutdownMsg = "Hard shutdown"
+const (
+	signalReceivedMsg     = "Shutting down safely. Send signal again to shutdown immediately. Warning: data loss possible."
+	signalHardShutdownMsg = "Hard shutdown"
+)
 
 var ErrorAlreadyRunning = errors.New("Manager is already running")
 
@@ -35,7 +37,7 @@ type Manager struct {
 	backend   Backend
 	processor Processor
 
-	workingJobs map[string]InternalJob
+	workingJobs map[string]*InternalJob
 }
 
 type ManagerOptions struct {
@@ -60,7 +62,7 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 		queues:      options.Queues,
 		signals:     options.Signals,
 		processor:   processor,
-		workingJobs: make(map[string]InternalJob),
+		workingJobs: make(map[string]*InternalJob),
 	}, nil
 }
 
@@ -179,13 +181,13 @@ func (s *Manager) watchQueue(ctx context.Context, queue string) {
 				continue
 			}
 
-			locked, err := s.backend.LockJob(*job)
+			lockID, err := s.backend.LockJob(job)
 			if err != nil {
 				Log.
 					Err(err).
 					Str("job_id", job.ID).
 					Str("lock_key", job.Job.LockKey()).
-					Msg("Unable to obtain lock")
+					Msg("Unable to obtain lock or hold job")
 			}
 
 			event := Log.
@@ -193,11 +195,12 @@ func (s *Manager) watchQueue(ctx context.Context, queue string) {
 				Str("job_id", job.ID).
 				Str("lock_key", job.Job.LockKey())
 
-			if locked {
-				event.Msg("Lock obtained")
-			} else {
+			if lockID == JobHeld {
 				event.Msg("Job held")
 				continue
+			} else if lockID != LockNotRequired {
+				job.LockID = lockID
+				event.Msg("Lock obtained")
 			}
 
 			ok = s.processor.Wait()
@@ -252,14 +255,14 @@ func (s *Manager) handleJob(ctx context.Context, job *InternalJob) {
 		return
 	}
 
-	err := s.backend.ProcessJob(job.StagingID)
+	err := s.backend.ProcessJob(job)
 	if err != nil {
 		Log.Err(err).Str("job_id", job.ID).Msg("Failed to move job to processing on the backend")
 		return
 	}
 
 	job.StartTime = time.Now()
-	s.workingJobs[job.ID] = *job
+	s.workingJobs[job.ID] = job
 
 	Log.Info().Str("job_id", job.ID).Msg("Handling job")
 	err = s.processor.SendJob(job)
@@ -300,23 +303,24 @@ func (s *Manager) waitForResults() {
 			s.backend.IncFailedJobs()
 		}
 
-		err := s.backend.ReleaseJob(*res.Job)
-		if err == nil {
-			Log.
-				Info().
-				Str("job_id", res.Job.ID).
-				Str("lock_key", res.Job.Job.LockKey()).
-				Msg("Released lock")
-		} else {
-			Log.
-				Panic().
-				Err(err).
-				Str("job_id", res.Job.ID).
-				Str("lock_key", res.Job.Job.LockKey()).
-				Msg("Failed to unlock job")
+		if res.Job.LockID != LockNotRequired {
+			err := s.backend.ReleaseJob(res.Job)
+			if err == nil {
+				Log.
+					Info().
+					Str("job_id", res.Job.ID).
+					Str("lock_key", res.Job.Job.LockKey()).
+					Msg("Released lock")
+			} else {
+				Log.
+					Panic().
+					Err(err).
+					Str("job_id", res.Job.ID).
+					Str("lock_key", res.Job.Job.LockKey()).
+					Msg("Failed to unlock job")
+			}
 		}
 	}
-
 }
 
 func (s *Manager) failJob(job *InternalJob) {
@@ -347,7 +351,6 @@ func (s *Manager) waitForSignal() {
 			} else {
 				done = true
 			}
-
 		}
 	}
 

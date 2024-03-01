@@ -205,16 +205,16 @@ func testLockJobLock(t *testing.T) {
 	job1.Job.(*mock.Job).LockKeyOverride = "lock"
 	job1.Job.(*mock.Job).ConcurrencyOverride = 1
 
-	ok, err := b.LockJob(job1)
+	lockID, err := b.LockJob(job1)
 	if err != nil {
 		t.Fatal("LockJob expected nil error got: ", err)
 	}
 
-	if !ok {
+	if lockID <= 0 {
 		t.Error("Unable to lock job")
 	}
 
-	exists, err := b.Exists(context.Background(), fmtLockKey(job1.Job.LockKey(), job1.ID)).Result()
+	exists, err := b.Exists(context.Background(), fmtLockKey(job1.Job.LockKey(), int(lockID))).Result()
 	if err != nil {
 		t.Fatal("Unable to check if lock key exists ", err)
 	}
@@ -224,13 +224,15 @@ func testLockJobLock(t *testing.T) {
 	}
 
 	job2 := newStagedJob(b)
-	ok, err = b.LockJob(job2)
+	lockID, err = b.LockJob(job2)
 	if err != nil {
 		t.Fatal("LockJob expected nil error got: ", err)
 	}
 
-	if !ok {
-		t.Error("Unable to lock job")
+	if lockID == wingman.JobHeld {
+		t.Error("Job with concurrency of 0 should not be held")
+	} else if lockID > 0 {
+		t.Error("Job with concurrency of 0 should not be locked")
 	}
 }
 
@@ -242,12 +244,13 @@ func testLockJobHold(t *testing.T) {
 	job1.Job.(*mock.Job).LockKeyOverride = "lock"
 	job1.Job.(*mock.Job).ConcurrencyOverride = 1
 
-	ok, err := b.LockJob(job1)
+	lockID, err := b.LockJob(job1)
 	if err != nil {
 		t.Fatal("LockJob expected nil error got: ", err)
 	}
+	job1.LockID = lockID
 
-	if !ok {
+	if int(lockID) <= 0 {
 		t.Error("Unable to lock job")
 	}
 
@@ -255,16 +258,16 @@ func testLockJobHold(t *testing.T) {
 	job2.Job.(*mock.Job).LockKeyOverride = "lock"
 	job2.Job.(*mock.Job).ConcurrencyOverride = 1
 
-	ok, err = b.LockJob(job2)
+	lockID, err = b.LockJob(job2)
 	if err != nil {
 		t.Fatal("LockJob expected nil error got: ", err)
 	}
 
-	if ok {
+	if lockID != wingman.JobHeld {
 		t.Error("Expected job to be held")
 	}
 
-	exists, err := b.Exists(context.Background(), fmtLockKey(job2.Job.LockKey(), job2.ID)).Result()
+	exists, err := b.Exists(context.Background(), fmtLockKey(job2.Job.LockKey(), int(lockID))).Result()
 	if err != nil {
 		t.Fatal("Unable to check if lock key exists ", err)
 	}
@@ -284,13 +287,12 @@ func testLockJobHold(t *testing.T) {
 	}
 
 	if length != 1 {
-		t.Error("Expected held job to be moved back to the queue")
+		t.Error("Expected held job to be moved back to the queue ")
 	}
 }
 
 func TestProcessJob(t *testing.T) {
 	t.Run("Success", testProcessJobSuccess)
-	t.Run("NoJob", testProcessJobNoJob)
 }
 
 func testProcessJobSuccess(t *testing.T) {
@@ -298,19 +300,19 @@ func testProcessJobSuccess(t *testing.T) {
 	defer b.Close()
 
 	initialJob := mock.NewWrappedJob()
-	stagingID := uuid.Must(uuid.NewRandom())
+	initialJob.StagingID = uuid.Must(uuid.NewRandom()).String()
 
 	raw, err := json.Marshal(initialJob)
 	if err != nil {
 		t.Fatal("Failed to marshal job: ", err)
 	}
 
-	err = b.RPush(context.Background(), fmtStagingKey(stagingID.String()), raw).Err()
+	err = b.RPush(context.Background(), fmtStagingKey(initialJob.StagingID), raw).Err()
 	if err != nil {
 		t.Fatal("Failed to add job to redis: ", err)
 	}
 
-	err = b.ProcessJob(stagingID.String())
+	err = b.ProcessJob(initialJob)
 	if err != nil {
 		t.Fatal("Expected nil error, got: ", err)
 	}
@@ -327,18 +329,6 @@ func testProcessJobSuccess(t *testing.T) {
 
 	if job.ID != initialJob.ID {
 		t.Errorf("Expected job on queue to match staged job. Expected: %v, got: %v", initialJob.ID, job.ID)
-	}
-}
-
-func testProcessJobNoJob(t *testing.T) {
-	b := testClient()
-	defer b.Close()
-
-	stagingID := uuid.Must(uuid.NewRandom())
-
-	err := b.ProcessJob(stagingID.String())
-	if err != wingman.ErrorJobNotStaged {
-		t.Errorf("Expected: %v, got: %v", wingman.ErrorJobNotStaged, err)
 	}
 }
 
@@ -696,7 +686,7 @@ func testClient() *Backend {
 	return client
 }
 
-func newStagedJob(client *Backend) wingman.InternalJob {
+func newStagedJob(client *Backend) *wingman.InternalJob {
 	job := mock.NewWrappedJob()
 	job.StagingID = uuid.Must(uuid.NewRandom()).String()
 
@@ -710,5 +700,5 @@ func newStagedJob(client *Backend) wingman.InternalJob {
 		panic(fmt.Sprint("Failed to add job to redis: ", err))
 	}
 
-	return *job
+	return job
 }

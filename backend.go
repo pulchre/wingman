@@ -24,21 +24,21 @@ type Backend interface {
 	// failure.
 	PopAndStageJob(ctx context.Context, queue string) (*InternalJob, error)
 
-	// LockJob attempts to lock the given job. If successful, true is
-	// returned. The manager will then process the job. If false, the job
-	// should be held until ReleaseJob is called after another job with
-	// the same lock key completes.
-	LockJob(job InternalJob) (bool, error)
+	// LockJob attempts to lock the given job. If successful, a LockID
+	// greater than 0 is returned. If JobHeld is returned, the job has been
+	// place in a separate holding queue. If LockNotRequired is returned,
+	// the job has not acquired a lock and should still be processed.
+	LockJob(job *InternalJob) (LockID, error)
 
 	// ReleaseJob release a single lock for the given job. If there is job
 	// with the same lock key that was previously held, it should be
 	// inserted back onto the front of the queue.
-	ReleaseJob(job InternalJob) error
+	ReleaseJob(job *InternalJob) error
 
 	// ProcessJob moves a job from staging to processing. This is merely
 	// marks the job in the backend as processing. The real processing is
 	// handled by a processor.
-	ProcessJob(stagingID string) error
+	ProcessJob(job *InternalJob) error
 
 	// ClearJob removes the job from processing.
 	ClearJob(jobID string) error

@@ -142,6 +142,7 @@ func (c *Client) handleJob(ctx context.Context, in *pb.Message) {
 	job := wingman.InternalJob{
 		ID:       in.Job.ID,
 		TypeName: in.Job.TypeName,
+		LockID:   wingman.LockID(in.Job.LockID),
 	}
 
 	job.Job, err = wingman.DeserializeJob(job.TypeName, in.Job.Payload)

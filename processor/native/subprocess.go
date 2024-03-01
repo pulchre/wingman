@@ -129,6 +129,7 @@ func (p *subprocess) sendJob(job *wingman.InternalJob) error {
 		Type: pb.Type_JOB,
 		Job: &pb.Job{
 			ID:       job.ID,
+			LockID:   int32(job.LockID),
 			TypeName: job.TypeName,
 			Payload:  payload,
 		},
@@ -136,6 +137,7 @@ func (p *subprocess) sendJob(job *wingman.InternalJob) error {
 
 	wingman.Log.Info().
 		Str("job_id", job.ID).
+		Int("lock_id", int(job.LockID)).
 		Int("subprocess_pid", p.Pid()).
 		Msg("Sending job to subprocess")
 	err = p.serverStream.Send(msg)
@@ -172,6 +174,7 @@ func (s *subprocess) handleStream() error {
 
 		switch in.Type {
 		case pb.Type_RESULT:
+
 			parsedJob, err := deserializeJob(in.Job)
 			if err != nil {
 				wingman.Log.Err(err).
@@ -242,6 +245,7 @@ func deserializeJob(msg *pb.Job) (*wingman.InternalJob, error) {
 
 	job := wingman.InternalJob{
 		ID:       msg.ID,
+		LockID:   wingman.LockID(msg.LockID),
 		TypeName: msg.TypeName,
 	}
 

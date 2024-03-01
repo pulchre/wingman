@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"strings"
 	"time"
 
@@ -13,13 +14,20 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const successfulJobsCount = "wingman:successful_total"
-const failedJobsCount = "wingman:failed_total"
-const stagingQueueFmt = "wingman:staging:%v"
-const heldQueueFmt = "wingman:held:%v"
-const lockKeyFmt = "wingman:lock:%s:%s"
-const processorFmt = "wingman:processing:%v"
-const failedFmt = "wingman:failed:%v"
+const (
+	successfulJobsCount = "wingman:successful_total"
+	failedJobsCount     = "wingman:failed_total"
+	stagingQueueFmt     = "wingman:staging:%v"
+	heldQueueFmt        = "wingman:held:%v"
+	lockKeyFmt          = "wingman:lock:%s:%d"
+	processorFmt        = "wingman:processing:%v"
+	failedFmt           = "wingman:failed:%v"
+)
+
+var (
+	ErrCouldNotLock = errors.New("could not lock job")
+	ctx             = context.Background()
+)
 
 type response struct {
 	Job   wingman.InternalJob
@@ -117,94 +125,85 @@ func (b Backend) PopAndStageJob(ctx context.Context, queue string) (*wingman.Int
 	return job, nil
 }
 
-func (b Backend) LockJob(job wingman.InternalJob) (bool, error) {
-	lockKey := job.Job.LockKey()
+func (b Backend) LockJob(job *wingman.InternalJob) (wingman.LockID, error) {
 	concurrency := job.Job.Concurrency()
 
-	if lockKey == "" || concurrency < 1 {
-		return true, nil
+	if job.Job.LockKey() == "" || concurrency < 1 {
+		return wingman.LockNotRequired, nil
 	}
 
-	serializedJob, err := json.Marshal(job)
-	if err != nil {
-		return false, err
-	}
+	var err error
+	checkedLocks := make(map[int]any, concurrency)
+	for len(checkedLocks) < concurrency {
+		// We add 1 here so we can reserve 0 for
+		// wingman.LockNotRequired
+		lockID := rand.IntN(concurrency) + 1
 
-	redisLockKey := fmtLockKey(lockKey, job.ID)
+		if _, ok := checkedLocks[lockID]; ok {
+			continue
+		}
+		checkedLocks[lockID] = nil
 
-	err = b.Set(context.Background(), redisLockKey, serializedJob, 5*time.Minute).Err()
-	if err != nil {
-		return false, err
-	}
-
-	count, err := b.lockCount(lockKey)
-	if err != nil {
-		return false, err
-	}
-
-	if count > concurrency {
-		err = b.LMove(context.Background(), fmtStagingKey(job.StagingID), fmtHeldKey(lockKey), "RIGHT", "RIGHT").Err()
-		err = errors.Join(err, b.Del(context.Background(), redisLockKey).Err())
-		if err != nil {
-			return false, err
+		lockKey := fmtLockKey(job.Job.LockKey(), lockID)
+		res := b.SetNX(ctx, lockKey, 1, 5*time.Minute)
+		if res.Err() != nil {
+			err = errors.Join(res.Err())
+			wingman.Log.Err(err).Msg("Failed attempt to lock")
+			continue
 		}
 
-		count, err = b.lockCount(lockKey)
-		if err != nil {
-			return false, err
+		if !res.Val() {
+			continue
 		}
 
-		// We check one more time if a lock has freed since we may not have
-		// tried to pull a held job before the above job was moved to the held
-		// list.
-		if count < concurrency {
-			err = b.LMove(context.Background(), fmtHeldKey(lockKey), job.Queue(), "RIGHT", "RIGHT").Err()
-			if err != nil && err != redis.Nil {
-				return false, err
-			}
-		}
-
-		return false, nil
+		return wingman.LockID(lockID), nil
 	}
 
-	return true, err
+	stagingKey := fmtStagingKey(job.StagingID)
+	heldKey := fmtHeldKey(job.Job.LockKey())
+	err = errors.Join(b.LMove(ctx, stagingKey, heldKey, "LEFT", "RIGHT").Err())
+	if err != nil {
+		wingman.Log.Err(err).Msg("Failed to lock or hold job")
+	}
+
+	return wingman.JobHeld, err
 }
 
-func (b Backend) ReleaseJob(job wingman.InternalJob) error {
-	lockKey := job.Job.LockKey()
+func (b Backend) ReleaseJob(job *wingman.InternalJob) error {
 	concurrency := job.Job.Concurrency()
+	ctx := context.Background()
 
-	if lockKey == "" || concurrency < 1 {
+	if job.Job.LockKey() == "" || concurrency < 1 || job.LockID == wingman.LockNotRequired {
 		return nil
 	}
 
-	redisLockKey := fmtLockKey(lockKey, job.ID)
-	err := b.LMove(context.Background(), fmtHeldKey(lockKey), job.Queue(), "LEFT", "LEFT").Err()
+	lockKey := fmtLockKey(job.Job.LockKey(), int(job.LockID))
+	_, err := b.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		pipe.Del(ctx, lockKey)
+		pipe.LMove(ctx, fmtHeldKey(job.Job.LockKey()), job.Queue(), "LEFT", "LEFT")
+		return nil
+	})
+
 	if err == redis.Nil {
-		err = nil
+		return nil
 	}
 
-	return errors.Join(err, b.Del(context.Background(), redisLockKey).Err())
+	return err
 }
 
-func (b Backend) ProcessJob(stagingID string) error {
-	raw, err := b.LRange(context.Background(), fmtStagingKey(stagingID), 0, 1).Result()
-	if err != nil {
-		return err
-	} else if len(raw) == 0 {
-		return wingman.ErrorJobNotStaged
-	}
-
-	job, err := wingman.InternalJobFromJSON([]byte(raw[0]))
-	if err != nil {
-		return wingman.ErrorJobNotStaged
-	}
-
-	err = b.LMove(context.Background(), fmtStagingKey(stagingID), fmtProcessingKey(job.ID), "LEFT", "RIGHT").Err()
+func (b Backend) ProcessJob(job *wingman.InternalJob) error {
+	serialzedJob, err := json.Marshal(job)
 	if err != nil {
 		return err
 	}
-	return nil
+
+	_, err = b.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		pipe.RPush(ctx, fmtProcessingKey(job.ID), serialzedJob)
+		pipe.Del(ctx, fmtStagingKey(job.StagingID))
+		return nil
+	})
+
+	return err
 }
 
 func (b Backend) ReenqueueStagedJob(stagingID string) error {
@@ -328,33 +327,11 @@ func (b *Backend) Close() (err error) {
 	return
 }
 
-func (b Backend) lockCount(key string) (int, error) {
-	redisLockKeyMatch := fmtLockKey(key, "*")
-	var count int
-	var cursor uint64
-	var err error
-	for {
-		var keys []string
-
-		keys, cursor, err = b.Scan(context.Background(), cursor, redisLockKeyMatch, 0).Result()
-		if err != nil {
-			return 0, err
-		}
-
-		count += len(keys)
-		if cursor == 0 {
-			break
-		}
-	}
-
-	return count, nil
-}
-
 func fmtStagingKey(id string) string {
 	return fmt.Sprintf(stagingQueueFmt, id)
 }
 
-func fmtLockKey(key, id string) string {
+func fmtLockKey(key string, id int) string {
 	return fmt.Sprintf(lockKeyFmt, key, id)
 }
 

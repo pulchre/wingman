@@ -11,6 +11,13 @@ import (
 	"github.com/google/uuid"
 )
 
+type LockID int
+
+const (
+	LockNotRequired = LockID(0)
+	JobHeld         = LockID(-1)
+)
+
 // ContextKey defines the type for our context value keys. We need this per the
 // documentation for Context that states that the keys should not be a standard
 // type.
@@ -19,9 +26,11 @@ type ContextKey string
 // ContextJobIDKey is the key under which the processor ID is stored.
 const ContextJobIDKey = ContextKey("jobID")
 
-var ErrorJobNotStaged = errors.New("Could not find staged job")
-var ErrorJobNotFound = errors.New("Could not find any job")
-var ErrorNilJob = errors.New("Job is nil")
+var (
+	ErrorJobNotStaged = errors.New("Could not find staged job")
+	ErrorJobNotFound  = errors.New("Could not find any job")
+	ErrorNilJob       = errors.New("Job is nil")
+)
 
 // Job is the interface definition for a given job. Handler should return the
 // name of the handler that this job will be processed by. Payload should be
@@ -54,6 +63,7 @@ func RegisterJobType(job Job) {
 // InternalJob is used by a backend and holds the id and type name for
 // deserialization. This should only be used by backend code.
 type InternalJob struct {
+	LockID   LockID
 	ID       string
 	TypeName string
 	Job      Job

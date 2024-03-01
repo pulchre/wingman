@@ -3,6 +3,7 @@ package mock
 import (
 	"context"
 	"errors"
+	"math/rand/v2"
 	"sync"
 	"sync/atomic"
 
@@ -103,12 +104,12 @@ func (b *Backend) PopAndStageJob(ctx context.Context, queue string) (*wingman.In
 	return nil, b.NextJobCanceledErr
 }
 
-func (b *Backend) LockJob(job wingman.InternalJob) (bool, error) {
+func (b *Backend) LockJob(job *wingman.InternalJob) (wingman.LockID, error) {
 	lockKey := job.Job.LockKey()
 	concurrency := job.Job.Concurrency()
 
 	if lockKey == "" || concurrency < 1 {
-		return true, nil
+		return wingman.LockNotRequired, nil
 	}
 
 	if _, ok := b.locks[lockKey]; !ok {
@@ -121,14 +122,14 @@ func (b *Backend) LockJob(job wingman.InternalJob) (bool, error) {
 		b.heldMu.Lock()
 		defer b.heldMu.Unlock()
 
-		b.held[lockKey] = append(b.held[lockKey], job)
-		return false, nil
+		b.held[lockKey] = append(b.held[lockKey], *job)
+		return wingman.JobHeld, nil
 	}
 
-	return true, nil
+	return wingman.LockID(rand.IntN(concurrency) + 1), nil
 }
 
-func (b *Backend) ReleaseJob(job wingman.InternalJob) error {
+func (b *Backend) ReleaseJob(job *wingman.InternalJob) error {
 	lockKey := job.Job.LockKey()
 
 	if _, ok := b.locks[lockKey]; !ok {
@@ -147,26 +148,21 @@ func (b *Backend) ReleaseJob(job wingman.InternalJob) error {
 		return nil
 	}
 
-	job = b.held[lockKey][0]
+	heldJob := b.held[lockKey][0]
 	b.held[lockKey] = b.held[lockKey][1:]
-	b.queues[job.Queue()] = append([]wingman.InternalJob{job}, b.queues[job.Queue()]...)
+	b.queues[job.Queue()] = append([]wingman.InternalJob{heldJob}, b.queues[job.Queue()]...)
 
 	b.notifier.Broadcast()
 
 	return nil
 }
 
-func (b *Backend) ProcessJob(stagingID string) error {
+func (b *Backend) ProcessJob(job *wingman.InternalJob) error {
 	b.notifier.L.Lock()
 	defer b.notifier.L.Unlock()
 
-	job, ok := b.staging[stagingID]
-	if !ok {
-		return wingman.ErrorJobNotStaged
-	}
-
-	b.working[stagingID] = job
-	delete(b.staging, stagingID)
+	b.working[job.StagingID] = *job
+	delete(b.staging, job.StagingID)
 
 	return nil
 }
@@ -271,5 +267,4 @@ func (b Backend) resolveSplatQueue(queue string) string {
 	}
 
 	return queue
-
 }

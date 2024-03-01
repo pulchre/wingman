@@ -16,11 +16,11 @@ func main() {
 
 	c, err := native.NewClient()
 	if err != nil {
-		panic(fmt.Sprintf("test=%s err=%v", test, err))
+		panic(fmt.Sprintf("NewClient: test=%s err=%v", test, err))
 	}
 
 	err = c.Start()
 	if err != nil {
-		panic(fmt.Sprintf("test=%s err=%v", test, err))
+		panic(fmt.Sprintf("Start: test=%s err=%v", test, err))
 	}
 }
