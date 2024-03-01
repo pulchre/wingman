@@ -17,15 +17,17 @@ import (
 	"github.com/pulchre/wingman/processor/goroutine"
 )
 
-const concurrencyCount = 2
-const timestampExpr = `[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([-|\+][0-9]{2}:[0-9]{2}|Z)`
-const durationExpr = `[0-9]+(\.[0-9]+)?(ns|µs|ms|s|m|h)`
+const (
+	concurrencyCount = 2
+	timestampExpr    = `[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([-|\+][0-9]{2}:[0-9]{2}|Z)`
+	durationExpr     = `[0-9]+(\.[0-9]+)?(ns|µs|ms|s|m|h)`
+)
 
 func init() {
 	// Call signal.Notify starts a goroutine which cannot be shut down
 	// (nor can the program deadlock). Therefore we start it here so when
 	// we compare the number of goroutines in tests we won't be off by one.
-	c := make(chan os.Signal)
+	c := make(chan os.Signal, 1)
 	signal.Notify(c)
 	signal.Stop(c)
 	close(c)
