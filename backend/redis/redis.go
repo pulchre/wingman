@@ -23,30 +23,30 @@ const failedFmt = "wingman:failed:%v"
 
 type response struct {
 	Job   wingman.InternalJob
-	Raw   []byte
 	Error error
+	Raw   []byte
 }
 
 type Backend struct {
 	*redis.Client
-
-	timeout time.Duration
+	config Config
 }
 
 var _ wingman.Backend = &Backend{}
 
 type Options struct {
 	redis.Options
+	Config
+}
 
+type Config struct {
 	BlockingTimeout time.Duration
 }
 
 func Init(options Options) (*Backend, error) {
-	var backend *Backend
-
-	backend = &Backend{
+	backend := &Backend{
 		redis.NewClient(&options.Options),
-		options.BlockingTimeout,
+		options.Config,
 	}
 
 	err := backend.Client.Ping(context.Background()).Err()
@@ -98,7 +98,7 @@ func (b Backend) PopAndStageJob(ctx context.Context, queue string) (*wingman.Int
 		}
 	}()
 
-	raw, err := conn.BLMove(context.Background(), queue, fmtStagingKey(stagingID.String()), "LEFT", "RIGHT", b.timeout).Result()
+	raw, err := conn.BLMove(context.Background(), queue, fmtStagingKey(stagingID.String()), "LEFT", "RIGHT", b.config.BlockingTimeout).Result()
 	if err != nil {
 		if err == redis.Nil {
 			return nil, wingman.ErrCanceled

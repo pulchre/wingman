@@ -16,8 +16,10 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-var redisHost = ""
-var redisPort = "6379"
+var (
+	redisHost = ""
+	redisPort = "6379"
+)
 
 func init() {
 	redisHost = os.Getenv("REDIS_HOST")
@@ -34,11 +36,12 @@ func TestInit(t *testing.T) {
 
 func testInitSuccess(t *testing.T) {
 	timeout := 10 * time.Second
-	backend, err := Init(Options{BlockingTimeout: timeout})
+	config := Config{BlockingTimeout: timeout}
+	backend, err := Init(Options{Config: config})
 	if backend == nil {
 		t.Error("Expected backend to be initialized")
-	} else if backend.timeout != timeout {
-		t.Errorf("Expected backend timeout to be %v, got %v", timeout, backend.timeout)
+	} else if backend.config != config {
+		t.Errorf("Expected backend config to be %v, got %v", config, backend.config)
 	}
 
 	if err != nil {
@@ -63,7 +66,6 @@ func testInitFail(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "connection refused") {
 		t.Errorf("Expected error to be %v, got %v", expected, errors.Unwrap(err))
 	}
-
 }
 
 func TestPushJob(t *testing.T) {
@@ -155,7 +157,7 @@ func testPopAndStageJobTimeout(t *testing.T) {
 	b := testClient()
 	defer b.Close()
 
-	b.timeout = 1 * time.Second
+	b.config.BlockingTimeout = 1 * time.Second
 
 	job, err := b.PopAndStageJob(context.Background(), mock.DefaultQueue)
 	if job != nil {
@@ -678,7 +680,9 @@ func TestSize(t *testing.T) {
 
 func testClient() *Backend {
 	client, err := Init(Options{
-		BlockingTimeout: 2 * time.Second,
+		Config: Config{
+			BlockingTimeout: 2 * time.Second,
+		},
 	})
 	if err != nil {
 		panic(fmt.Sprint("Failed to create testing client: ", err))
