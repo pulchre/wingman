@@ -16,7 +16,7 @@ To enqueue jobs:
 1. Import `github.com/pulchre/wingman`
 1. Register job types
 1. Import the backend package (e.g., github.com/wingman/backend/redis)
-1. Import the backend support package (e.g., github.com/gomodule/redigo/redis)
+1. Import the backend support package (e.g., github.com/redis/go-redis)
 1. Initialize the backend support package
 1. To enqueue a job, call `backend.PushJob(job)`
 
@@ -26,7 +26,7 @@ To build a manager binary:
 1. Import `github.com/pulchre/wingman`
 1. Register job types
 1. Import the backend package (e.g., github.com/wingman/backend/redis)
-1. Import the backend support package (e.g., github.com/gomodule/redigo/redis)
+1. Import the backend support package (e.g., github.com/redis/go-redis)
 1. Initialize the backend `redis.Init(redisOpts)`
 1. Initialize a new manager with the desired options,
    `wingman.NewManager(opts)`
