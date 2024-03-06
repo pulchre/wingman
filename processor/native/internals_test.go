@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"testing"
 
@@ -13,6 +14,13 @@ import (
 	pb "github.com/pulchre/wingman/grpc"
 	"google.golang.org/grpc"
 )
+
+func init() {
+	if _, ok := os.LookupEnv("WINGMAN_NATIVE_BIN"); !ok {
+		os.Setenv("WINGMAN_NATIVE_BIN", "./testcmdbin")
+		bin = "./testcmdbin"
+	}
+}
 
 func GetBinPath() string {
 	return bin
