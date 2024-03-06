@@ -17,6 +17,7 @@ import (
 const (
 	successfulJobsCount = "wingman:successful_total"
 	failedJobsCount     = "wingman:failed_total"
+	queueFmt            = "wingman:queue:%s"
 	stagingQueueFmt     = "wingman:staging:%v"
 	heldQueueFmt        = "wingman:held:%v"
 	lockKeyFmt          = "wingman:lock:%s:%d"
@@ -77,7 +78,7 @@ func (b Backend) PushJob(job wingman.Job) error {
 		return err
 	}
 
-	return b.RPush(context.Background(), job.Queue(), serializedJob).Err()
+	return b.RPush(context.Background(), fmtQueueKey(job.Queue()), serializedJob).Err()
 }
 
 func (b Backend) PopAndStageJob(ctx context.Context, queue string) (*wingman.InternalJob, error) {
@@ -106,7 +107,7 @@ func (b Backend) PopAndStageJob(ctx context.Context, queue string) (*wingman.Int
 		}
 	}()
 
-	raw, err := conn.BLMove(context.Background(), queue, fmtStagingKey(stagingID.String()), "LEFT", "RIGHT", b.config.BlockingTimeout).Result()
+	raw, err := conn.BLMove(context.Background(), fmtQueueKey(queue), fmtStagingKey(stagingID.String()), "LEFT", "RIGHT", b.config.BlockingTimeout).Result()
 	if err != nil {
 		if err == redis.Nil {
 			return nil, wingman.ErrCanceled
@@ -180,7 +181,7 @@ func (b Backend) ReleaseJob(job *wingman.InternalJob) error {
 	lockKey := fmtLockKey(job.Job.LockKey(), int(job.LockID))
 	_, err := b.Pipelined(ctx, func(pipe redis.Pipeliner) error {
 		pipe.Del(ctx, lockKey)
-		pipe.LMove(ctx, fmtHeldKey(job.Job.LockKey()), job.Queue(), "LEFT", "LEFT")
+		pipe.LMove(ctx, fmtHeldKey(job.Job.LockKey()), fmtQueueKey(job.Queue()), "LEFT", "LEFT")
 		return nil
 	})
 
@@ -219,7 +220,7 @@ func (b Backend) ReenqueueStagedJob(stagingID string) error {
 		return err
 	}
 
-	err = b.LMove(context.Background(), fmtStagingKey(stagingID), job.Queue(), "LEFT", "RIGHT").Err()
+	err = b.LMove(context.Background(), fmtStagingKey(stagingID), fmtQueueKey(job.Queue()), "LEFT", "RIGHT").Err()
 	if err != nil {
 		return err
 	}
@@ -282,7 +283,7 @@ func (b Backend) ClearStagedJob(stagingID string) error {
 }
 
 func (b Backend) Peek(queue string) (*wingman.InternalJob, error) {
-	raw, err := b.LRange(context.Background(), queue, 0, 0).Result()
+	raw, err := b.LRange(context.Background(), fmtQueueKey(queue), 0, 0).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -295,7 +296,7 @@ func (b Backend) Peek(queue string) (*wingman.InternalJob, error) {
 }
 
 func (b Backend) Size(queue string) uint64 {
-	size, _ := b.LLen(context.Background(), queue).Uint64()
+	size, _ := b.LLen(context.Background(), fmtQueueKey(queue)).Uint64()
 	return size
 }
 
@@ -325,6 +326,10 @@ func (b *Backend) Close() (err error) {
 	}
 
 	return
+}
+
+func fmtQueueKey(queue string) string {
+	return fmt.Sprintf(queueFmt, queue)
 }
 
 func fmtStagingKey(id string) string {

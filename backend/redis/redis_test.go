@@ -121,7 +121,7 @@ func testPopAndStageJobSuccess(t *testing.T) {
 		panic(err)
 	}
 
-	b.RPush(context.Background(), initialJob.Job.Queue(), raw)
+	b.RPush(context.Background(), fmtQueueKey(initialJob.Job.Queue()), raw)
 
 	job, err := b.PopAndStageJob(context.Background(), mock.DefaultQueue)
 	if err != nil {
@@ -139,7 +139,12 @@ func testPopAndStageJobSuccess(t *testing.T) {
 		t.Errorf("Expected input and output to be equal. In: %v. Out: %v", raw, job)
 	}
 
-	stagedJob, err := b.Peek(fmtStagingKey(job.StagingID))
+	rawStagedJob, err := b.LRange(context.Background(), fmtStagingKey(job.StagingID), 0, 0).Result()
+	if err != nil {
+		panic(err)
+	}
+
+	stagedJob, err := wingman.InternalJobFromJSON([]byte(rawStagedJob[0]))
 	if err != nil {
 		panic(err)
 	}
@@ -281,7 +286,7 @@ func testLockJobHold(t *testing.T) {
 		t.Fatal("ReleaseJob expected nil error got: ", err)
 	}
 
-	length, err := b.LLen(context.Background(), job2.Queue()).Result()
+	length, err := b.LLen(context.Background(), fmtQueueKey(job2.Queue())).Result()
 	if err != nil {
 		panic(err)
 	}
@@ -417,7 +422,7 @@ func testReenqueueStagedJobSuccess(t *testing.T) {
 		t.Fatal("Expected nil error, got: ", err)
 	}
 
-	retrieved, err := b.LRange(context.Background(), initialJob.Queue(), 0, 1).Result()
+	retrieved, err := b.LRange(context.Background(), fmtQueueKey(initialJob.Queue()), 0, 1).Result()
 	if err != nil {
 		t.Fatal("Failed to retrieve job from redis ", err)
 	}
@@ -600,7 +605,7 @@ func testPeekSuccess(t *testing.T) {
 		panic(err)
 	}
 
-	b.RPush(context.Background(), initialJob.Queue(), raw)
+	b.RPush(context.Background(), fmtQueueKey(initialJob.Queue()), raw)
 	size := b.Size(mock.DefaultQueue)
 
 	job, err := b.Peek(mock.DefaultQueue)
@@ -660,7 +665,7 @@ func TestSize(t *testing.T) {
 		panic(err)
 	}
 
-	b.RPush(context.Background(), initialJob.Queue(), raw)
+	b.RPush(context.Background(), fmtQueueKey(initialJob.Queue()), raw)
 	size = b.Size(mock.DefaultQueue)
 
 	if size != 1 {
