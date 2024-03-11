@@ -118,7 +118,7 @@ func TestServerSendMessage(t *testing.T) {
 	}
 
 	// Give time for the client to connect
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
 
 	job := mock.NewWrappedJob()
 

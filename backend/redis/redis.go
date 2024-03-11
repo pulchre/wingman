@@ -6,10 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
-	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/pulchre/wingman"
 	"github.com/redis/go-redis/v9"
 )
@@ -18,7 +16,6 @@ const (
 	successfulJobsCount = "wingman:successful_total"
 	failedJobsCount     = "wingman:failed_total"
 	queueFmt            = "wingman:queue:%s"
-	stagingQueueFmt     = "wingman:staging:%v"
 	heldQueueFmt        = "wingman:held:%v"
 	lockKeyFmt          = "wingman:lock:%s:%d"
 	processorFmt        = "wingman:processing:%v"
@@ -73,7 +70,11 @@ func (b Backend) PushJob(job wingman.Job) error {
 		return err
 	}
 
-	serializedJob, err := json.Marshal(intJob)
+	return b.PushInternalJob(intJob)
+}
+
+func (b Backend) PushInternalJob(job *wingman.InternalJob) error {
+	serializedJob, err := json.Marshal(job)
 	if err != nil {
 		return err
 	}
@@ -81,9 +82,7 @@ func (b Backend) PushJob(job wingman.Job) error {
 	return b.RPush(context.Background(), fmtQueueKey(job.Queue()), serializedJob).Err()
 }
 
-func (b Backend) PopAndStageJob(ctx context.Context, queue string) (*wingman.InternalJob, error) {
-	stagingID := uuid.New()
-
+func (b Backend) PopJob(ctx context.Context, queue string) (*wingman.InternalJob, error) {
 	conn := b.Conn()
 	clientID, err := conn.ClientID(context.Background()).Result()
 	if err != nil {
@@ -107,7 +106,7 @@ func (b Backend) PopAndStageJob(ctx context.Context, queue string) (*wingman.Int
 		}
 	}()
 
-	raw, err := conn.BLMove(context.Background(), fmtQueueKey(queue), fmtStagingKey(stagingID.String()), "LEFT", "RIGHT", b.config.BlockingTimeout).Result()
+	raw, err := conn.BLPop(context.Background(), b.config.BlockingTimeout, fmtQueueKey(queue)).Result()
 	if err != nil {
 		if err == redis.Nil {
 			return nil, wingman.ErrCanceled
@@ -116,12 +115,10 @@ func (b Backend) PopAndStageJob(ctx context.Context, queue string) (*wingman.Int
 		}
 	}
 
-	job, err := wingman.InternalJobFromJSON([]byte(raw))
+	job, err := wingman.InternalJobFromJSON([]byte(raw[1]))
 	if err != nil {
 		return nil, err
 	}
-
-	job.StagingID = stagingID.String()
 
 	return job, nil
 }
@@ -133,7 +130,11 @@ func (b Backend) LockJob(job *wingman.InternalJob) (wingman.LockID, error) {
 		return wingman.LockNotRequired, nil
 	}
 
-	var err error
+	serialzedJob, err := json.Marshal(job)
+	if err != nil {
+		return 0, err
+	}
+
 	checkedLocks := make(map[int]any, concurrency)
 	for len(checkedLocks) < concurrency {
 		// We add 1 here so we can reserve 0 for
@@ -160,9 +161,8 @@ func (b Backend) LockJob(job *wingman.InternalJob) (wingman.LockID, error) {
 		return wingman.LockID(lockID), nil
 	}
 
-	stagingKey := fmtStagingKey(job.StagingID)
 	heldKey := fmtHeldKey(job.Job.LockKey())
-	err = errors.Join(b.LMove(ctx, stagingKey, heldKey, "LEFT", "RIGHT").Err())
+	err = errors.Join(b.RPush(ctx, heldKey, serialzedJob).Err())
 	if err != nil {
 		wingman.Log.Err(err).Msg("Failed to lock or hold job")
 	}
@@ -198,88 +198,25 @@ func (b Backend) ProcessJob(job *wingman.InternalJob) error {
 		return err
 	}
 
-	_, err = b.Pipelined(ctx, func(pipe redis.Pipeliner) error {
-		pipe.RPush(ctx, fmtProcessingKey(job.ID), serialzedJob)
-		pipe.Del(ctx, fmtStagingKey(job.StagingID))
-		return nil
-	})
-
-	return err
-}
-
-func (b Backend) ReenqueueStagedJob(stagingID string) error {
-	raw, err := b.LRange(context.Background(), fmtStagingKey(stagingID), 0, 1).Result()
-	if err != nil {
-		return err
-	} else if len(raw) < 1 {
-		return wingman.ErrorJobNotStaged
-	}
-
-	job, err := wingman.InternalJobFromJSON([]byte(raw[0]))
-	if err != nil {
-		return err
-	}
-
-	err = b.LMove(context.Background(), fmtStagingKey(stagingID), fmtQueueKey(job.Queue()), "LEFT", "RIGHT").Err()
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return b.Set(ctx, fmtProcessingKey(job.ID), serialzedJob, 0).Err()
 }
 
 func (b Backend) ClearJob(jobID string) error {
 	return b.Del(context.Background(), fmtProcessingKey(jobID)).Err()
 }
 
-func (b Backend) FailJob(jobID string) error {
-	return b.LMove(context.Background(), fmtProcessingKey(jobID), fmtFailedKey(jobID), "RIGHT", "RIGHT").Err()
-}
-
-func (b Backend) StagedJobs() ([]*wingman.InternalJob, error) {
-	var cursor uint64
-	var keys []string
-	var err error
-
-	for {
-		var nextKeys []string
-
-		nextKeys, cursor, err = b.Scan(context.Background(), cursor, fmtStagingKey("*"), 0).Result()
-		if err != nil {
-			return nil, err
-		}
-
-		keys = append(keys, nextKeys...)
-
-		if cursor == 0 {
-			break
-		}
+func (b Backend) FailJob(job *wingman.InternalJob) error {
+	serialzedJob, err := json.Marshal(job)
+	if err != nil {
+		return err
 	}
 
-	jobs := make([]*wingman.InternalJob, len(keys))
-
-	for i, key := range keys {
-		raw, err := b.LRange(context.Background(), key, 0, 0).Result()
-		if err != nil {
-			return nil, err
-		}
-
-		job, err := wingman.InternalJobFromJSON([]byte(raw[0]))
-		if err != nil {
-			return nil, wingman.NewBackendIDError(key, err)
-		}
-
-		split := strings.Split(key, ":")
-		job.StagingID = split[2]
-
-		jobs[i] = job
-	}
-
-	return jobs, nil
-}
-
-func (b Backend) ClearStagedJob(stagingID string) error {
-	return b.Del(context.Background(), fmtStagingKey(stagingID)).Err()
+	_, err = b.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		pipe.Del(ctx, fmtProcessingKey(job.ID))
+		pipe.Set(ctx, fmtFailedKey(job.ID), serialzedJob, 0)
+		return nil
+	})
+	return err
 }
 
 func (b Backend) Peek(queue string) (*wingman.InternalJob, error) {
@@ -330,10 +267,6 @@ func (b *Backend) Close() (err error) {
 
 func fmtQueueKey(queue string) string {
 	return fmt.Sprintf(queueFmt, queue)
-}
-
-func fmtStagingKey(id string) string {
-	return fmt.Sprintf(stagingQueueFmt, id)
 }
 
 func fmtLockKey(key string, id int) string {

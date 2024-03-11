@@ -88,16 +88,6 @@ func (s *Manager) Start() error {
 		return err
 	}
 
-	// This will throw any jobs that were popped off their queue but for
-	// which processing had not began.
-	err = s.reenqueueStagedJobs()
-	if err != nil {
-		s.cancel()
-		s.running = false
-		Log.Err(err).Msg("Failed to reenqueue staged jobs")
-		return err
-	}
-
 	// Signal handling
 	if len(s.signals) > 0 {
 		s.signalMu.Lock()
@@ -206,13 +196,12 @@ func (s *Manager) watchQueue(ctx context.Context, queue string) {
 			ok = s.processor.Wait()
 
 			if !ok {
-				err := s.backend.ReenqueueStagedJob(job.StagingID)
+				err := s.backend.PushInternalJob(job)
 				if err != nil {
 					Log.
 						Err(err).
-						Str("staging_id", job.StagingID).
 						Str("job_id", job.ID).
-						Msg("Failed to reenqueue staged job")
+						Msg("Failed to reenqueue job")
 				}
 				continue
 			}
@@ -233,7 +222,7 @@ func (s *Manager) retrieveJob(ctx context.Context, queue string) <-chan *Interna
 		defer close(jobChan)
 		defer s.wg.Done()
 
-		job, err := s.backend.PopAndStageJob(ctx, queue)
+		job, err := s.backend.PopJob(ctx, queue)
 		if err != nil {
 			if err != ErrCanceled {
 				Log.Err(err).Msg("Failed to retrieve next job")
@@ -324,7 +313,7 @@ func (s *Manager) waitForResults() {
 }
 
 func (s *Manager) failJob(job *InternalJob) {
-	err := s.backend.FailJob(job.ID)
+	err := s.backend.FailJob(job)
 	if err != nil {
 		Log.Err(err).Str("job_id", job.ID).Msg("Failed to move job status to failed with error")
 	}
@@ -357,22 +346,4 @@ func (s *Manager) waitForSignal() {
 	if i > 1 {
 		Log.Fatal().Msg(signalHardShutdownMsg)
 	}
-}
-
-func (s *Manager) reenqueueStagedJobs() error {
-	jobs, err := s.backend.StagedJobs()
-	if err != nil {
-		return err
-	}
-
-	for _, j := range jobs {
-		err = s.backend.ReenqueueStagedJob(j.StagingID)
-		if err == ErrorJobNotStaged {
-			Log.Err(err).Str("staging_id", j.StagingID).Msg("Failed to reenqueue staged job")
-		} else if err != nil {
-			return err
-		}
-	}
-
-	return nil
 }

@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/pulchre/wingman"
 	"github.com/pulchre/wingman/mock"
 	"github.com/redis/go-redis/v9"
@@ -84,9 +83,9 @@ func testPushJobSuccess(t *testing.T) {
 		t.Fatal("Expected nil error. Got: ", err)
 	}
 
-	retrievedJob, err := b.PopAndStageJob(context.Background(), job.Queue())
+	retrievedJob, err := b.PopJob(context.Background(), job.Queue())
 	if err != nil {
-		t.Fatal("PopAndStageJob returned nil job")
+		t.Fatal("PopJob returned nil job")
 	}
 
 	if job.Data != retrievedJob.Job.(*mock.Job).Data {
@@ -104,13 +103,13 @@ func testPushJobNil(t *testing.T) {
 	}
 }
 
-func TestPopAndStageJob(t *testing.T) {
-	t.Run("Success", testPopAndStageJobSuccess)
-	t.Run("Timeout", testPopAndStageJobTimeout)
-	t.Run("Cancel", testPopAndStageJobContextDone)
+func TestPopJob(t *testing.T) {
+	t.Run("Success", testPopJobSuccess)
+	t.Run("Timeout", testPopJobTimeout)
+	t.Run("Cancel", testPopJobContextDone)
 }
 
-func testPopAndStageJobSuccess(t *testing.T) {
+func testPopJobSuccess(t *testing.T) {
 	b := testClient()
 	defer b.Close()
 
@@ -123,7 +122,7 @@ func testPopAndStageJobSuccess(t *testing.T) {
 
 	b.RPush(context.Background(), fmtQueueKey(initialJob.Job.Queue()), raw)
 
-	job, err := b.PopAndStageJob(context.Background(), mock.DefaultQueue)
+	job, err := b.PopJob(context.Background(), mock.DefaultQueue)
 	if err != nil {
 		t.Errorf("Expected err to be nil. Got: %v", err)
 	}
@@ -138,23 +137,9 @@ func testPopAndStageJobSuccess(t *testing.T) {
 		job.Job == initialJob.Job {
 		t.Errorf("Expected input and output to be equal. In: %v. Out: %v", raw, job)
 	}
-
-	rawStagedJob, err := b.LRange(context.Background(), fmtStagingKey(job.StagingID), 0, 0).Result()
-	if err != nil {
-		panic(err)
-	}
-
-	stagedJob, err := wingman.InternalJobFromJSON([]byte(rawStagedJob[0]))
-	if err != nil {
-		panic(err)
-	}
-
-	if job.ID != stagedJob.ID {
-		t.Error("Expected job to be staged")
-	}
 }
 
-func testPopAndStageJobTimeout(t *testing.T) {
+func testPopJobTimeout(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping long-running test")
 	}
@@ -164,7 +149,7 @@ func testPopAndStageJobTimeout(t *testing.T) {
 
 	b.config.BlockingTimeout = 1 * time.Second
 
-	job, err := b.PopAndStageJob(context.Background(), mock.DefaultQueue)
+	job, err := b.PopJob(context.Background(), mock.DefaultQueue)
 	if job != nil {
 		t.Errorf("Expected job to be nil: %v", job)
 	}
@@ -174,7 +159,7 @@ func testPopAndStageJobTimeout(t *testing.T) {
 	}
 }
 
-func testPopAndStageJobContextDone(t *testing.T) {
+func testPopJobContextDone(t *testing.T) {
 	b := testClient()
 	defer b.Close()
 
@@ -182,7 +167,7 @@ func testPopAndStageJobContextDone(t *testing.T) {
 	defer cancel()
 	start := time.Now()
 
-	job, err := b.PopAndStageJob(ctx, mock.DefaultQueue)
+	job, err := b.PopJob(ctx, mock.DefaultQueue)
 	end := time.Now()
 	if job != nil {
 		t.Errorf("Expected job to be nil: %v", job)
@@ -206,7 +191,7 @@ func testLockJobLock(t *testing.T) {
 	b := testClient()
 	defer b.Close()
 
-	job1 := newStagedJob(b)
+	job1 := mock.NewWrappedJob()
 	job1.Job.(*mock.Job).LockKeyOverride = "lock"
 	job1.Job.(*mock.Job).ConcurrencyOverride = 1
 
@@ -228,7 +213,7 @@ func testLockJobLock(t *testing.T) {
 		t.Error("Failed to lock job")
 	}
 
-	job2 := newStagedJob(b)
+	job2 := mock.NewWrappedJob()
 	lockID, err = b.LockJob(job2)
 	if err != nil {
 		t.Fatal("LockJob expected nil error got: ", err)
@@ -245,7 +230,7 @@ func testLockJobHold(t *testing.T) {
 	b := testClient()
 	defer b.Close()
 
-	job1 := newStagedJob(b)
+	job1 := mock.NewWrappedJob()
 	job1.Job.(*mock.Job).LockKeyOverride = "lock"
 	job1.Job.(*mock.Job).ConcurrencyOverride = 1
 
@@ -259,7 +244,7 @@ func testLockJobHold(t *testing.T) {
 		t.Error("Unable to lock job")
 	}
 
-	job2 := newStagedJob(b)
+	job2 := mock.NewWrappedJob()
 	job2.Job.(*mock.Job).LockKeyOverride = "lock"
 	job2.Job.(*mock.Job).ConcurrencyOverride = 1
 
@@ -296,6 +281,61 @@ func testLockJobHold(t *testing.T) {
 	}
 }
 
+func TestReleaseJob(t *testing.T) {
+	t.Run("NotLocked", testReleaseJobNotLocked)
+	t.Run("NoLockKey", testReleaseJobNoLockKey)
+	t.Run("ConcurrencyLessThanOne", testReleaseJobConcurrencyLessThanOne)
+	t.Run("LockNotRequired", testReleaseJobLockNotRequired)
+}
+
+func testReleaseJobNotLocked(t *testing.T) {
+	b := testClient()
+	job := mock.NewWrappedJob()
+	job.Job.(*mock.Job).LockKeyOverride = "lock_key"
+	job.Job.(*mock.Job).ConcurrencyOverride = 1
+	job.LockID = wingman.LockID(1)
+	err := b.ReleaseJob(job)
+	if err != nil {
+		t.Fatal("Expected nil error, got: ", err)
+	}
+}
+
+func testReleaseJobNoLockKey(t *testing.T) {
+	b := testClient()
+	job := mock.NewWrappedJob()
+	job.Job.(*mock.Job).LockKeyOverride = ""
+	job.Job.(*mock.Job).ConcurrencyOverride = 1
+	job.LockID = wingman.LockID(1)
+	err := b.ReleaseJob(job)
+	if err != nil {
+		t.Fatal("Expected nil error, got: ", err)
+	}
+}
+
+func testReleaseJobConcurrencyLessThanOne(t *testing.T) {
+	b := testClient()
+	job := mock.NewWrappedJob()
+	job.Job.(*mock.Job).LockKeyOverride = "lock_key"
+	job.Job.(*mock.Job).ConcurrencyOverride = 0
+	job.LockID = wingman.LockID(1)
+	err := b.ReleaseJob(job)
+	if err != nil {
+		t.Fatal("Expected nil error, got: ", err)
+	}
+}
+
+func testReleaseJobLockNotRequired(t *testing.T) {
+	b := testClient()
+	job := mock.NewWrappedJob()
+	job.Job.(*mock.Job).LockKeyOverride = "lock_key"
+	job.Job.(*mock.Job).ConcurrencyOverride = 1
+	job.LockID = wingman.LockNotRequired
+	err := b.ReleaseJob(job)
+	if err != nil {
+		t.Fatal("Expected nil error, got: ", err)
+	}
+}
+
 func TestProcessJob(t *testing.T) {
 	t.Run("Success", testProcessJobSuccess)
 }
@@ -305,35 +345,24 @@ func testProcessJobSuccess(t *testing.T) {
 	defer b.Close()
 
 	initialJob := mock.NewWrappedJob()
-	initialJob.StagingID = uuid.Must(uuid.NewRandom()).String()
 
-	raw, err := json.Marshal(initialJob)
-	if err != nil {
-		t.Fatal("Failed to marshal job: ", err)
-	}
-
-	err = b.RPush(context.Background(), fmtStagingKey(initialJob.StagingID), raw).Err()
-	if err != nil {
-		t.Fatal("Failed to add job to redis: ", err)
-	}
-
-	err = b.ProcessJob(initialJob)
+	err := b.ProcessJob(initialJob)
 	if err != nil {
 		t.Fatal("Expected nil error, got: ", err)
 	}
 
-	retrieved, err := b.LRange(context.Background(), fmtProcessingKey(initialJob.ID), 0, 1).Result()
+	retrieved, err := b.Get(context.Background(), fmtProcessingKey(initialJob.ID)).Result()
 	if err != nil {
 		t.Fatal("Failed to retrieve job from redis ", err)
 	}
 
-	job, err := wingman.InternalJobFromJSON([]byte(retrieved[0]))
+	job, err := wingman.InternalJobFromJSON([]byte(retrieved))
 	if err != nil {
 		t.Fatal("Failed to unmarshal job ", err)
 	}
 
 	if job.ID != initialJob.ID {
-		t.Errorf("Expected job on queue to match staged job. Expected: %v, got: %v", initialJob.ID, job.ID)
+		t.Errorf("Expected job at processing key to match the one sent. Expected: %v, got: %v", initialJob.ID, job.ID)
 	}
 }
 
@@ -343,7 +372,7 @@ func TestClearProcessorSuccess(t *testing.T) {
 
 	jobID := "job1"
 
-	err := b.RPush(context.Background(), fmtProcessingKey(jobID), "some job").Err()
+	err := b.Set(context.Background(), fmtProcessingKey(jobID), "some job", 0).Err()
 	if err != nil {
 		t.Fatal("Failed to push data to redis with error: ", err)
 	}
@@ -374,12 +403,12 @@ func TestFailJob(t *testing.T) {
 		panic(err)
 	}
 
-	err = b.RPush(context.Background(), fmtProcessingKey(job.ID), raw).Err()
+	err = b.Set(context.Background(), fmtProcessingKey(job.ID), raw, 0).Err()
 	if err != nil {
 		t.Fatal("Failed to push data to redis with error: ", err)
 	}
 
-	err = b.FailJob(job.ID)
+	err = b.FailJob(job)
 	if err != nil {
 		t.Error("Expected nil error, got: ", err)
 	}
@@ -391,201 +420,6 @@ func TestFailJob(t *testing.T) {
 
 	if len(keys) != 1 {
 		t.Error("Expected 1 job to be moved, got: ", len(keys))
-	}
-}
-
-func TestReenqueueStagedJob(t *testing.T) {
-	t.Run("Success", testReenqueueStagedJobSuccess)
-	t.Run("InvalidJob", testReenqueueStagedJobInvalidJob)
-	t.Run("JobNotFound", testReenqueueStagedJobJobNotFound)
-}
-
-func testReenqueueStagedJobSuccess(t *testing.T) {
-	b := testClient()
-	defer b.Close()
-
-	initialJob := mock.NewWrappedJob()
-	stagingID := uuid.Must(uuid.NewRandom())
-
-	raw, err := json.Marshal(initialJob)
-	if err != nil {
-		t.Fatal("Failed to marshal job: ", err)
-	}
-
-	err = b.RPush(context.Background(), fmtStagingKey(stagingID.String()), raw).Err()
-	if err != nil {
-		t.Fatal("Failed to add job to redis: ", err)
-	}
-
-	err = b.ReenqueueStagedJob(stagingID.String())
-	if err != nil {
-		t.Fatal("Expected nil error, got: ", err)
-	}
-
-	retrieved, err := b.LRange(context.Background(), fmtQueueKey(initialJob.Queue()), 0, 1).Result()
-	if err != nil {
-		t.Fatal("Failed to retrieve job from redis ", err)
-	}
-
-	job, err := wingman.InternalJobFromJSON([]byte(retrieved[0]))
-	if err != nil {
-		t.Fatal("Failed to unmarshal job ", err)
-	}
-
-	if job.ID != initialJob.ID {
-		t.Errorf("Expected job on queue to match staged job. Expected: %v, got: %v", initialJob.ID, job.ID)
-	}
-}
-
-func testReenqueueStagedJobInvalidJob(t *testing.T) {
-	b := testClient()
-	defer b.Close()
-
-	stagingID := uuid.Must(uuid.NewRandom())
-
-	err := b.RPush(context.Background(), fmtStagingKey(stagingID.String()), "invalid job").Err()
-	if err != nil {
-		t.Fatal("Failed to add job to redis: ", err)
-	}
-
-	err = b.ReenqueueStagedJob(stagingID.String())
-	if err == nil {
-		t.Fatal("Expected error, got nil")
-	}
-}
-
-func testReenqueueStagedJobJobNotFound(t *testing.T) {
-	b := testClient()
-	defer b.Close()
-
-	stagingID := uuid.Must(uuid.NewRandom())
-
-	err := b.ReenqueueStagedJob(stagingID.String())
-	if err != wingman.ErrorJobNotStaged {
-		t.Errorf("Expected `%v`, got `%v`", wingman.ErrorJobNotStaged, err)
-	}
-}
-
-func TestStagedJobs(t *testing.T) {
-	t.Run("Success", testStagedJobsSuccess)
-	t.Run("InvalidJobPayload", testStagedJobsInvalidJobPayload)
-}
-
-func testStagedJobsSuccess(t *testing.T) {
-	b := testClient()
-	defer b.Close()
-
-	initialJob1 := mock.NewWrappedJob()
-	initialJob2 := mock.NewWrappedJob()
-
-	raw1, err := json.Marshal(initialJob1)
-	if err != nil {
-		t.Fatal("Failed to marshal job: ", err)
-	}
-
-	raw2, err := json.Marshal(initialJob2)
-	if err != nil {
-		t.Fatal("Failed to marshal job: ", err)
-	}
-
-	err = b.RPush(context.Background(), fmtStagingKey(uuid.Must(uuid.NewRandom()).String()), raw1).Err()
-	if err != nil {
-		t.Fatal("Failed to add job to redis: ", err)
-	}
-
-	err = b.RPush(context.Background(), fmtStagingKey(uuid.Must(uuid.NewRandom()).String()), raw2).Err()
-	if err != nil {
-		t.Fatal("Failed to add job to redis: ", err)
-	}
-
-	jobs, err := b.StagedJobs()
-	if err != nil {
-		t.Fatal("Error retrieving staged jobs: ", err)
-	}
-
-	var resultIDs []string
-	for _, j := range jobs {
-		resultIDs = append(resultIDs, j.ID)
-	}
-
-	unexpectedResults := func() {
-		t.Errorf("Unexpected jobs returned. Expected: %v. got: %v", []string{initialJob1.ID, initialJob2.ID}, resultIDs)
-	}
-
-	if len(jobs) == 2 {
-		if initialJob1.ID != jobs[0].ID && initialJob1.ID != jobs[1].ID {
-			unexpectedResults()
-		}
-
-		if initialJob2.ID != jobs[0].ID && initialJob2.ID != jobs[1].ID {
-			unexpectedResults()
-		}
-	} else {
-		unexpectedResults()
-	}
-}
-
-func testStagedJobsInvalidJobPayload(t *testing.T) {
-	b := testClient()
-	defer b.Close()
-
-	val := "some value"
-	id := uuid.Must(uuid.NewRandom())
-	key := fmtStagingKey(id.String())
-
-	err := b.RPush(context.Background(), key, val).Err()
-	if err != nil {
-		t.Fatal("Failed to add job to redis: ", err)
-	}
-
-	_, err = b.StagedJobs()
-	if err == nil {
-		t.Error("Expected error received nil")
-	}
-
-	switch err.(type) {
-	case wingman.BackendIDError:
-		got := err.(wingman.BackendIDError).ID
-		if got != key {
-			t.Errorf("Expected error to have failed key. Expected: %s. Got: %s", key, got)
-		}
-	default:
-		t.Error("Expected error to be type BackendIDError")
-	}
-}
-
-func TestClearStagedJobSuccess(t *testing.T) {
-	b := testClient()
-	defer b.Close()
-
-	initialJob := mock.NewWrappedJob()
-	id := uuid.Must(uuid.NewRandom())
-
-	raw, err := json.Marshal(initialJob)
-	if err != nil {
-		t.Fatal("Failed to marshal job: ", err)
-	}
-
-	err = b.RPush(context.Background(), fmtStagingKey(id.String()), raw).Err()
-	if err != nil {
-		t.Error("Unable to add value to redis: ", err)
-	}
-
-	err = b.ClearStagedJob(id.String())
-	if err != nil {
-		t.Error("Expected nil error, got: ", err)
-	}
-
-	resp, err := b.LRange(context.Background(), fmtStagingKey(id.String()), 0, 0).Result()
-	if err != nil {
-		t.Error("Expected nil error, got: ", err)
-	} else if len(resp) > 0 {
-		t.Error("Expected nil response, got: ", resp)
-	}
-
-	err = b.ClearStagedJob("does_not_exist")
-	if err != nil {
-		t.Error("Expected nil error, got: ", err)
 	}
 }
 
@@ -689,21 +523,4 @@ func testClient() *Backend {
 	}
 
 	return client
-}
-
-func newStagedJob(client *Backend) *wingman.InternalJob {
-	job := mock.NewWrappedJob()
-	job.StagingID = uuid.Must(uuid.NewRandom()).String()
-
-	raw, err := json.Marshal(job)
-	if err != nil {
-		panic(fmt.Sprint("Failed to marshal job ", err))
-	}
-
-	err = client.RPush(context.Background(), fmtStagingKey(job.StagingID), raw).Err()
-	if err != nil {
-		panic(fmt.Sprint("Failed to add job to redis: ", err))
-	}
-
-	return job
 }

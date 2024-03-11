@@ -27,9 +27,8 @@ type ContextKey string
 const ContextJobIDKey = ContextKey("jobID")
 
 var (
-	ErrorJobNotStaged = errors.New("Could not find staged job")
-	ErrorJobNotFound  = errors.New("Could not find any job")
-	ErrorNilJob       = errors.New("Job is nil")
+	ErrorJobNotFound = errors.New("Could not find any job")
+	ErrorNilJob      = errors.New("Job is nil")
 )
 
 // Job is the interface definition for a given job. Handler should return the
@@ -70,12 +69,6 @@ type InternalJob struct {
 
 	StartTime time.Time `json:"-"`
 	EndTime   time.Time `json:"-"`
-
-	// We use StagingID instead of the job ID itself because we want to
-	// keep the job in the backend we are finished with it so that we don't
-	// lose any data. So when we pop off a job from the queue, we won't
-	// know what the job ID is. Thus we use StagingID.
-	StagingID string `json:"-"`
 }
 
 // InternalJobFromJSON is a helper intended for use by backends to deserialize
