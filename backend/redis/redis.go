@@ -16,7 +16,6 @@ const (
 	successfulJobsCount = "wingman:successful_total"
 	failedJobsCount     = "wingman:failed_total"
 	queueFmt            = "wingman:queue:%s"
-	heldQueueFmt        = "wingman:held:%v"
 	lockKeyFmt          = "wingman:lock:%s:%d"
 	processorFmt        = "wingman:processing:%v"
 	failedFmt           = "wingman:failed:%v"
@@ -106,7 +105,7 @@ func (b Backend) PopJob(ctx context.Context, queue string) (*wingman.InternalJob
 		}
 	}()
 
-	raw, err := conn.BLPop(context.Background(), b.config.BlockingTimeout, fmtQueueKey(queue)).Result()
+	raw, err := conn.BLPop(ctx, b.config.BlockingTimeout, fmtQueueKey(queue)).Result()
 	if err != nil {
 		if err == redis.Nil {
 			return nil, wingman.ErrCanceled
@@ -161,8 +160,7 @@ func (b Backend) LockJob(job *wingman.InternalJob) (wingman.LockID, error) {
 		return wingman.LockID(lockID), nil
 	}
 
-	heldKey := fmtHeldKey(job.Job.LockKey())
-	err = errors.Join(b.RPush(ctx, heldKey, serialzedJob).Err())
+	err = errors.Join(b.RPush(ctx, fmtQueueKey(job.Queue()), serialzedJob).Err())
 	if err != nil {
 		wingman.Log.Err(err).Msg("Failed to lock or hold job")
 	}
@@ -179,12 +177,7 @@ func (b Backend) ReleaseJob(job *wingman.InternalJob) error {
 	}
 
 	lockKey := fmtLockKey(job.Job.LockKey(), int(job.LockID))
-	_, err := b.Pipelined(ctx, func(pipe redis.Pipeliner) error {
-		pipe.Del(ctx, lockKey)
-		pipe.LMove(ctx, fmtHeldKey(job.Job.LockKey()), fmtQueueKey(job.Queue()), "LEFT", "LEFT")
-		return nil
-	})
-
+	err := b.Del(ctx, lockKey).Err()
 	if err == redis.Nil {
 		return nil
 	}
@@ -271,10 +264,6 @@ func fmtQueueKey(queue string) string {
 
 func fmtLockKey(key string, id int) string {
 	return fmt.Sprintf(lockKeyFmt, key, id)
-}
-
-func fmtHeldKey(key string) string {
-	return fmt.Sprintf(heldQueueFmt, key)
 }
 
 func fmtProcessingKey(id string) string {
